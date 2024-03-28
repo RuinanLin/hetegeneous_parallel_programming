@@ -88,7 +88,6 @@ void vec_add_explicit_transfer_multi_gpu(float *c, float *a, float *b, int vec_s
     // declare device pointers
     float **d_a = (float **)malloc((gpu_count - 1) * sizeof(float *));
     float **d_b = (float **)malloc((gpu_count - 1) * sizeof(float *));
-    float **d_c = (float **)malloc((gpu_count - 1) * sizeof(float *));
 
     // alloc memory in each device
     for (int device_idx = 0; device_idx < gpu_count - 1; device_idx++)
@@ -104,74 +103,54 @@ void vec_add_explicit_transfer_multi_gpu(float *c, float *a, float *b, int vec_s
         CUDA_SAFE_CALL(cudaMemcpy(d_a[device_idx], a + vec_start_idx, tile_size * sizeof(float), cudaMemcpyHostToDevice));
         CUDA_SAFE_CALL(cudaMalloc((void **)&(d_b[device_idx]), tile_size * sizeof(float)));
         CUDA_SAFE_CALL(cudaMemcpy(d_b[device_idx], b + vec_start_idx, tile_size * sizeof(float), cudaMemcpyHostToDevice));
-        CUDA_SAFE_CALL(cudaMalloc((void **)&(d_c[device_idx]), tile_size * sizeof(float)));
     }
 
     // now I regret: I want all the work done by the last gpu
+    CUDA_SAFE_CALL(cudaSetDevice(gpu_count - 1));
+    printf("\tGPU %d set ...\n", gpu_count - 1);
     float *d_a_last_gpu;
     float *d_b_last_gpu;
     float *d_c_last_gpu;
+    CUDA_SAFE_CALL(cudaMalloc((void **)&d_a_last_gpu, vec_size * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void **)&d_b_last_gpu, vec_size * sizeof(float)));
+    CUDA_SAFE_CALL(cudaMalloc((void **)&d_c_last_gpu, vec_size * sizeof(float)));
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    // launch kernel in each device
-    for (int device_idx = 0; device_idx < gpu_count; device_idx++)
+    // set streams and peer transfer
+    cudaStream_t *stream = (cudaStream_t *)malloc(((gpu_count - 1) * sizeof(cudaStream_t)));
+    for (int device_idx = 0; device_idx < gpu_count - 1; device_idx++)
     {
-        // set a new active device
         CUDA_SAFE_CALL(cudaSetDevice(device_idx));
-        printf("\tGPU %d start kernel ...\n", device_idx);
+        CUDA_SAFE_CALL(cudaStreamCreate(&(stream[device_idx])));
+        int tile_size = (device_idx < gpu_count - 2) ? normal_tile_size : (vec_size - normal_tile_size * (gpu_count - 2));
+        int vec_start_idx = device_idx * normal_tile_size;
+        CUDA_SAFE_CALL(cudaMemcpyPeerAsync(d_a_last_gpu + vec_start_idx, gpu_count - 1, d_a[device_idx], device_idx, tile_size * sizeof(float), stream[device_idx]));
+        CUDA_SAFE_CALL(cudaMemcpyPeerAsync(d_b_last_gpu + vec_start_idx, gpu_count - 1, d_b[device_idx], device_idx, tile_size * sizeof(float), stream[device_idx]));
+    }
+    CUDA_SAFE_CALL(cudaDeviceSynchronize());
 
-        // launch the kernel
-        int tile_size = (device_idx < gpu_count - 1) ? normal_tile_size : (vec_size - normal_tile_size * (gpu_count - 1));
-        vec_add_kernel<<<(tile_size - 1) / BLOCK_SIZE + 1, BLOCK_SIZE>>>(d_c[device_idx], d_a[device_idx], d_b[device_idx], tile_size);
-
-        // free the adders' memory
+    // free the devices' memory
+    for (int device_idx = 0; device_idx < gpu_count - 1; device_idx++)
+    {
         CUDA_SAFE_CALL(cudaFree(d_a[device_idx]));
         CUDA_SAFE_CALL(cudaFree(d_b[device_idx]));
     }
-
-    // free d_a and d_b
     free(d_a);
     free(d_b);
 
-    // copy result and free the memory in each device
-    for (int device_idx = 0; device_idx < gpu_count; device_idx++)
-    {
-        // set a new active device
-        CUDA_SAFE_CALL(cudaSetDevice(device_idx));
-        printf("\tGPU %d copy result ...\n", device_idx);
+    // set the last gpu to calc
+    CUDA_SAFE_CALL(cudaSetDevice(gpu_count - 1));
+    cudaStream_t stream_last_gpu;
+    CUDA_SAFE_CALL(cudaStreamCreate(&stream_last_gpu));
+    vec_add_kernel<<<(vec_size - 1) / BLOCK_SIZE + 1, BLOCK_SIZE, 0, stream_last_gpu>>>(d_c_last_gpu, d_a_last_gpu, d_b_last_gpu, vec_size);
 
-        // copy
-        int tile_size = (device_idx < gpu_count - 1) ? normal_tile_size : (vec_size - normal_tile_size * (gpu_count - 1));
-        int vec_start_idx = device_idx * normal_tile_size;
-        CUDA_SAFE_CALL(cudaMemcpy(c + vec_start_idx, d_c[device_idx], tile_size * sizeof(float), cudaMemcpyDeviceToHost));
+    // copy the result out
+    CUDA_SAFE_CALL(cudaMemcpyAsync(c, d_c_last_gpu, vec_size * sizeof(float), cudaMemcpyDeviceToHost, stream_last_gpu));
+    CUDA_SAFE_CALL(cudaStreamSynchronize(stream_last_gpu));
 
-        // free d_c[]
-        CUDA_SAFE_CALL(cudaFree(d_c[device_idx]));
-    }
-
-    // free d_c
-    free(d_c);
+    // free the last gpu's memory
+    CUDA_SAFE_CALL(cudaFree(d_a_last_gpu));
+    CUDA_SAFE_CALL(cudaFree(d_b_last_gpu));
+    CUDA_SAFE_CALL(cudaFree(d_c_last_gpu));
 }
 
 __global__ void vec_add_kernel(float *c, float *a, float *b, int vec_size)
