@@ -21,26 +21,33 @@ typedef cub::BlockReduce<AccType, BLOCK_SIZE> BlockReduce;
 
 /**************************************** Definition of SubGraphs ***************************************/
 
+typedef std::pair<vidType, vidType> directedEdge;
+
 class Type1SubGraph {
   protected:
-    vidType super_num_vertices; // how many vertices in the super graph
-    int num_partitions;         // the super graph is partitioned into how many partitions
-    int this_partition_idx;     // the index of the partition corresponding to this subgraph
-    vidType start_vertex_idx;   // the start index of the vertices in this partition, in the global view
-    vidType this_num_vertices;  // how many vertices in this partition
-    std::ofstream logFile;      // its own logFile
+    vidType super_num_vertices;           // how many vertices in the super graph
+    int num_partitions;                   // the super graph is partitioned into how many partitions
+    int this_partition_idx;               // the index of the partition corresponding to this subgraph
+    vidType start_vertex_idx;             // the start index of the vertices in this partition, in the global view
+    vidType this_num_vertices;            // how many vertices in this partition
+    std::ofstream logFile;                // its own logFile
 
-    std::vector<vidType> edges; // column indices of CSR format
-    eidType *row_pointers;      // row pointers of CSR format
+    vidType *edges;                       // column indices of CSR format, starting point only inner
+    eidType *row_pointers;                // row pointers of CSR format, starting point only inner
+
+    std::vector<directedEdge> temp_edges; // for the process of generating, allowing start from outer
+    vidType *edge_counters;               // counts how many edges are from a particular vertex
+    eidType this_num_edges;               // counts how many edges in this subgraph
 
   public:
     void init(Graph &g, int num_partitions, int this_partition_idx);
     void destroy();
+    void add_edge(vidType from, vidType to);
 };
 
 // initialize the subgraph
 void Type1SubGraph::init(Graph &g, int num_partitions, int this_partition_idx) :
-    super_num_vertices(g.V()), num_partitions(num_partitions), this_partition_idx(this_partition_idx)
+    super_num_vertices(g.V()), num_partitions(num_partitions), this_partition_idx(this_partition_idx), this_num_edges(0)
 {
   // initialize its own logFile
   std::string file_name = "Type1SubGraph_log" + std::to_string(this_partition_idx) + ".txt";
@@ -63,8 +70,13 @@ void Type1SubGraph::init(Graph &g, int num_partitions, int this_partition_idx) :
   logFile << "\t\tstart_vertex_idx = " << start_vertex_idx << "\n";
   logFile << "\t\tthis_num_vertices = " << this_num_vertices << "\n";
 
-  // initialize the "row_pointers"
-  logFile << "\t"
+  // initialize the CSR
+  logFile << "\tAllocate row_pointers ...\n";
+  edges = NULL;   // no edges now
+  row_pointers = (eidType *)malloc(this_num_vertices * sizeof(eidType));
+  edge_counters = (vidType *)malloc(this_num_vertices * sizeof(vidType));
+  for (vidType u = 0; u < this_num_vertices; u++) // clear the counters
+    edge_counters[u] = 0;
 
   // finish initialization and exit
   logFile << "Initialization succeeded!\n";
@@ -77,15 +89,30 @@ void Type1SubGraph::destroy()
 
   // free the "edges_from_outside" and "edges_to_outside"
   logFile << "\tFree the allocated memory ...\n";
-  free(edges_from_outside);
-  free(row_pointers_for_edges_from_outside);
-  free(edges_to_outside);
-  free(row_pointers_for_edges_to_outside);
+  free(row_pointers);
   logFile << "\tAllocated memory freed!\n";
 
   // close the logFile
   logFile << "Gracefully finishing ...\n";
   logFile.close();
+}
+
+// push a new edge to the temp_edges
+void Type1SubGraph::add_edge(vidType from, vidType to)
+{
+  // refresh the counter of 'from'
+  edge_counters[from]++;
+  this_num_edges++;
+
+  // create a pair
+  directedEdge edge(from, to);
+  temp_edges.push_back(edge);
+}
+
+// reorder the temp_edges and create the final CSR format
+void Type1SubGraph::reduce()
+{
+  
 }
 
 /**************************************** Definition of TCSolver ***************************************/
@@ -134,9 +161,23 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
       {
         vidType v = g.N(u, v_idx);
         int v_partition_idx = v % normal_vertex_number_each_partition;
+        if (device_idx == v_partition_idx)  // inner edge
+          type1_subgraphs[device_idx].add_edge(u, v);
+        else  // cross edge
+        {
+          type1_subgraphs[device_idx].add_edge(u, v);
+          type1_subgraphs[v_partition_idx].add_edge(v, u);
+        }
       }
     }
   }
+  logFile << "Finish mapping!\n";
+
+  // reduce
+  logFile << "Start reducing ...\n";
+  for (int device_idx = 0; device_idx < device_count; device_idx++)
+    type1_subgraphs[device_idx].reduce();
+  logFile << "Finish reducing ...\n";
 
   // end and exit
   logFile << "Destoying Type1SubGraphs ...\n";
