@@ -210,14 +210,14 @@ class Type3SubGraph {
     void init(Graph &g, int num_part, int this_type3_subgraph_index);
     void destroy();
     void add_edge(vidType u, int u_partition_idx, vidType v, int v_partition_idx);
-    void recude();
+    void reduce();
     vidType get_out_degree_0_to_1(vidType u);
     vidType get_out_degree_0_to_2(vidType u);
     vidType get_out_degree_1_to_2(vidType v);
     vidType N_0_to_1(vidType u, vidType n);
     vidType N_0_to_2(vidType u, vidType n);
     vidType N_1_to_2(vidType v, vidType n);
-}
+};
 
 // initialize the subgraph
 void Type3SubGraph::init(Graph &g, int num_part, int this_type3_subgraph_index)
@@ -254,7 +254,7 @@ void Type3SubGraph::init(Graph &g, int num_part, int this_type3_subgraph_index)
   logFile << "\t\tpartition_start_vertex_idx_tuple = (" << std::get<0>(partition_start_vertex_idx_tuple) << ", " << std::get<1>(partition_start_vertex_idx_tuple) << ", " << std::get<2>(partition_start_vertex_idx_tuple) << ")\n";
 
   // allocate memory
-  logFile << "\tAllocate row_pointers ...\n"
+  logFile << "\tAllocate row_pointers ...\n";
   row_pointers_0_to_1 = (eidType *)malloc((std::get<0>(partition_num_vertices_tuple) + 1) * sizeof(eidType));
   for (eidType u = 0; u < std::get<0>(partition_num_vertices_tuple) + 1; u++)
     row_pointers_0_to_1[u] = 0;
@@ -312,7 +312,7 @@ void Type3SubGraph::add_edge(vidType u, int u_partition_idx, vidType v, int v_pa
 }
 
 // reorder and create the CSR format
-void Type3SubGraph::recude()
+void Type3SubGraph::reduce()
 {
   // allocate memory for 'edges'
   edges_0_to_1 = (vidType *)malloc(temp_edges_0_to_1.size() * sizeof(vidType));
@@ -388,7 +388,7 @@ void Type3SubGraph::recude()
     std::sort(edges_1_to_2 + row_pointers_1_to_2[v - partition_start_vertex_idx_1], edges_1_to_2 + row_pointers_1_to_2[v + 1 - partition_start_vertex_idx_1]);
     logFile << "\t\t" << v << ": ";
     vidType v_1_to_2_deg = get_out_degree_1_to_2(v);
-    for (vidType w_idx = 0; w_idx < v_0_to_1_deg; w_idx++)
+    for (vidType w_idx = 0; w_idx < v_1_to_2_deg; w_idx++)
       logFile << N_1_to_2(v, w_idx) << " ";
     logFile << "\n";
   }
@@ -527,7 +527,7 @@ int get_type3_subgraph_idx(int device_count, vidType u, vidType v, vidType w)
   int type3_subgraph_idx = 0;
   for (vidType ui = 0; ui < u; ui++)
     type3_subgraph_idx += (device_count - ui - 1) * (device_count - ui - 2) / 2;
-  for (vidType vi = ui + 1; vi < v; vi++)
+  for (vidType vi = u + 1; vi < v; vi++)
     type3_subgraph_idx += device_count - vi - 1;
   type3_subgraph_idx += w - v - 1;
   return type3_subgraph_idx;
@@ -536,9 +536,24 @@ int get_type3_subgraph_idx(int device_count, vidType u, vidType v, vidType w)
 // sort the three vertices into increasing order
 void sort_three_vertices(vidType *u, vidType *v, vidType *w)
 {
-  if (*u > *v) vidType temp = *v, *v = *u, *u = temp;
-  if (*v > *w) vidType temp = *w, *w = *v, *v = temp;
-  if (*u > *v) vidType temp = *v, *v = *u, *u = temp;
+  if (*u > *v)
+  {
+    vidType temp = *v;
+    *v = *u;
+    *u = temp;
+  }
+  if (*v > *w)
+  {
+    vidType temp = *w;
+    *w = *v;
+    *v = temp;
+  }
+  if (*u > *v)
+  {
+    vidType temp = *v;
+    *v = *u;
+    *u = temp;
+  }
 }
 
 /**************************************** Definition of TCSolver ***************************************/
@@ -573,7 +588,7 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
   logFile << "\tAll the Type1SubGraphs created!\n";
   int type3_subgraph_num = get_type3_subgraph_num(device_count);
   std::vector<Type3SubGraph> type3_subgraphs(device_count);
-  for (int type3_subgraph_idx = 0 type3_subgraph_idx < type3_subgraph_num; type3_subgraph_idx++)
+  for (int type3_subgraph_idx = 0; type3_subgraph_idx < type3_subgraph_num; type3_subgraph_idx++)
     type3_subgraphs[type3_subgraph_idx].init(g, device_count, type3_subgraph_idx);
   logFile << "\tAll the Type3SubGraphs created!\n";
 
