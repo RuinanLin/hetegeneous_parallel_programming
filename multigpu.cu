@@ -17,10 +17,15 @@ typedef cub::BlockReduce<AccType, BLOCK_SIZE> BlockReduce;
 #include <string>
 #include <vector>
 #include <algorithm>
-
-/**************************************** Definition of SubGraphs ***************************************/
+#include <tuple>
 
 typedef std::pair<vidType, vidType> directedEdge;
+typedef std::tuple<int, int, int> type3Tuple;
+
+int get_type3_subgraph_num(int device_count);
+type3Tuple get_type3_subgraph_tuple(int this_type3_subgraph_idx, int num_partitions);
+
+/**************************************** Definition of Type1SubGraph ***************************************/
 
 class Type1SubGraph {
   protected:
@@ -173,6 +178,105 @@ vidType Type1SubGraph::N(vidType u, vidType n)
   return edges[row_pointers[u - start_vertex_idx] + n];
 }
 
+/**************************************** Definition of Type3SubGraph ***************************************/
+
+class Type3SubGraph {
+  protected:
+    int this_type3_subgraph_idx;    // the global index among all the Type3SubGraphs
+    int num_partitions;             // how many partitions in the super graph
+    type3Tuple this_subgraph_tuple; // records the three indices of the partitions, sorted
+    std::ofstream logFile;          // its own logFile
+
+    vidType *edges_0_to_1;
+    eidType *row_pointers_0_to_1;
+    std::vector<directedEdge> temp_edges_0_to_1;
+
+    vidType *edges_0_to_2;
+    eidType *row_pointers_0_to_2;
+    std::vector<directedEdge> temp_edges_0_to_2;
+
+    vidType *edges_1_to_2;
+    eidType *row_pointers_1_to_2;
+    std::vector<directedEdge> temp_edges_1_to_2;
+
+  public:
+    void init(Graph &g, int num_part, int this_type3_subgraph_index);
+}
+
+// initialize the subgraph
+void Type3SubGraph::init(Graph &g, int num_part, int this_type3_subgraph_index)
+{
+  // initialize its own logFile
+  std::string file_name = "Type3SubGraph_log" + std::to_string(this_type3_subgraph_index) + ".txt";
+  logFile.open(file_name);
+  if (!logFile)
+  {
+    std::cerr << "Cannot open " << file_name << "\n";
+    exit(-1);
+  }
+  logFile << "logFile created!\nType3SubGraph " << this_type3_subgraph_index << " initialization starts ...\n";
+
+  // initialize private variables
+  this_type3_subgraph_idx = this_type3_subgraph_index;
+  num_partitions = num_part;
+  this_subgraph_tuple = get_type3_subgraph_tuple(this_type3_subgraph_idx, num_partitions);
+  logFile << "Private variables initialized!\n";
+  logFile << "\tthis_type3_subgraph_idx = " << this_type3_subgraph_idx << "\n";
+  logFile << "\tnum_partitions = " << num_partitions << "\n";
+  logFile << "\tthis_subgraph_tuple = (" << std::get<0>(this_subgraph_tuple) << ", " << std::get<1>(this_subgraph_tuple) << ", " << std::get<2>(this_subgraph_tuple) << ")\n";
+}
+
+/**************************************** Definition of tool functions ***************************************/
+
+// given the device_count, calculate how many Type3SubGraphs
+int get_type3_subgraph_num(int device_count)
+{
+  return (device_count * (device_count - 1) * (device_count - 2)) / 6;
+}
+
+// given the global index of Type3SubGraph, calculate its 3-tuple
+type3Tuple get_type3_subgraph_tuple(int this_type3_subgraph_idx, int num_partitions)
+{
+  // check whether the requirement is legal, in the legal range
+  int type3_subgraph_num = get_type3_subgraph_num(num_partitions);
+  if (this_type3_subgraph_idx < 0 || this_type3_subgraph_idx >= type3_subgraph_num)
+  {
+    std::cout << "Error! 'this_type3_subgraph_idx' out of range in 'get_type3_subgraph_tuple()' call!\n";
+    exit(-1);
+  }
+
+  // travers and attempt
+  int first;
+  int second;
+  int third;
+  type3Tuple tuple;
+  for (first = 0; first < num_partitions - 2; first++)
+  {
+    int num_subgraphs_with_first = (num_partitions - first - 1) * (num_partitions - first - 2) / 2;
+    if (num_subgraphs_with_first <= this_type3_subgraph_idx)
+      this_type3_subgraph_idx -= num_subgraphs_with_first;
+    else
+    {
+      std::get<0>(tuple) = first;
+      for (second = first + 1; second < num_partitions - 1; second++)
+      {
+        int num_subgraphs_with_second = num_partitions - second - 1;
+        if (num_subgraphs_with_second <= this_type3_subgraph_idx)
+          this_type3_subgraph_idx -= num_subgraphs_with_second;
+        else
+        {
+          std::get<1>(tuple) = second;
+          third = second + 1 + this_type3_subgraph_idx;
+          std::get<2>(tuple) = third;
+          break;
+        }
+      }
+      break;
+    }
+  }
+  return tuple;
+}
+
 /**************************************** Definition of TCSolver ***************************************/
 
 void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
@@ -202,7 +306,12 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
   std::vector<Type1SubGraph> type1_subgraphs(device_count);
   for (int device_idx = 0; device_idx < device_count; device_idx++)
     type1_subgraphs[device_idx].init(g, device_count, device_idx);
-  logFile << "All the Type1SubGraph created!\n";
+  logFile << "\tAll the Type1SubGraphs created!\n";
+  int type3_subgraph_num = get_type3_subgraph_num(device_count);
+  std::vector<Type3SubGraph> type3_subgraphs(device_count);
+  for (int type3_subgraph_idx = 0 type3_subgraph_idx < type3_subgraph_num; type3_subgraph_idx++)
+    type3_subgraphs[type3_subgraph_idx].init(g, device_count, type3_subgraph_idx);
+  logFile << "\tAll the Type3SubGraphs created!\n";
 
   // map
   logFile << "Start mapping ...\n";
