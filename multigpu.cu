@@ -204,9 +204,19 @@ class Type3SubGraph {
     eidType *row_pointers_1_to_2;
     std::vector<directedEdge> temp_edges_1_to_2;
 
+    int creation_finished;
+
   public:
     void init(Graph &g, int num_part, int this_type3_subgraph_index);
+    void destroy();
     void add_edge(vidType u, int u_partition_idx, vidType v, int v_partition_idx);
+    void recude();
+    vidType get_out_degree_0_to_1(vidType u);
+    vidType get_out_degree_0_to_2(vidType u);
+    vidType get_out_degree_1_to_2(vidType v);
+    vidType N_0_to_1(vidType u, vidType n);
+    vidType N_0_to_2(vidType u, vidType n);
+    vidType N_1_to_2(vidType v, vidType n);
 }
 
 // initialize the subgraph
@@ -234,6 +244,7 @@ void Type3SubGraph::init(Graph &g, int num_part, int this_type3_subgraph_index)
   std::get<0>(partition_start_vertex_idx_tuple) = normal_vertex_number_each_partition * std::get<0>(this_subgraph_tuple);
   std::get<1>(partition_start_vertex_idx_tuple) = normal_vertex_number_each_partition * std::get<1>(this_subgraph_tuple);
   std::get<2>(partition_start_vertex_idx_tuple) = normal_vertex_number_each_partition * std::get<2>(this_subgraph_tuple);
+  creation_finished = 0;
   logFile << "\tPrivate variables initialized!\n";
   logFile << "\t\tthis_type3_subgraph_idx = " << this_type3_subgraph_idx << "\n";
   logFile << "\t\tnum_partitions = " << num_partitions << "\n";
@@ -258,6 +269,26 @@ void Type3SubGraph::init(Graph &g, int num_part, int this_type3_subgraph_index)
   logFile << "Initialization finished!\n";
 }
 
+// destroy the subgraph
+void Type3SubGraph::destroy()
+{
+  logFile << "Start destroying Type3SubGraph " << this_type3_subgraph_idx << " ...\n";
+
+  // free the allocated memory
+  logFile << "\tFree the allocated memory ...\n";
+  free(edges_0_to_1);
+  free(row_pointers_0_to_1);
+  free(edges_0_to_2);
+  free(row_pointers_0_to_2);
+  free(edges_1_to_2);
+  free(row_pointers_1_to_2);
+  logFile << "\tAllocated memory freed!\n";
+
+  // close the logFile
+  logFile << "Gracefully finishing ...\n";
+  logFile.close();
+}
+
 // add (u, v) to the Type3SubGraph (u < v is guaranteed)
 void Type3SubGraph::add_edge(vidType u, int u_partition_idx, vidType v, int v_partition_idx)
 {
@@ -278,6 +309,161 @@ void Type3SubGraph::add_edge(vidType u, int u_partition_idx, vidType v, int v_pa
     temp_edges_1_to_2.push_back(edge);
     row_pointers_1_to_2[u - std::get<1>(partition_start_vertex_idx_tuple)]++;
   }
+}
+
+// reorder and create the CSR format
+void Type3SubGraph::recude()
+{
+  // allocate memory for 'edges'
+  edges_0_to_1 = (vidType *)malloc(temp_edges_0_to_1.size() * sizeof(vidType));
+  edges_0_to_2 = (vidType *)malloc(temp_edges_0_to_2.size() * sizeof(vidType));
+  edges_1_to_2 = (vidType *)malloc(temp_edges_1_to_2.size() * sizeof(vidType));
+
+  // perform scanning on row_pointers
+  for (vidType counter_idx = 0; counter_idx < std::get<0>(partition_num_vertices_tuple); counter_idx++)
+  {
+    row_pointers_0_to_1[counter_idx + 1] += row_pointers_0_to_1[counter_idx];
+    row_pointers_0_to_2[counter_idx + 1] += row_pointers_0_to_2[counter_idx];
+  }
+  for (vidType counter_idx = 0; counter_idx < std::get<1>(partition_num_vertices_tuple); counter_idx++)
+    row_pointers_1_to_2[counter_idx + 1] += row_pointers_1_to_2[counter_idx];
+
+  // pop the edges from back one by one and place it to the correct place
+  vidType start_idx = std::get<0>(partition_start_vertex_idx_tuple);
+  while (temp_edges_0_to_1.size() > 0)
+  {
+    directedEdge edge = temp_edges_0_to_1[temp_edges_0_to_1.size() - 1];
+    edges_0_to_1[--row_pointers_0_to_1[edge.first - start_idx]] = edge.second;
+    temp_edges_0_to_1.pop_back();
+  }
+  while (temp_edges_0_to_2.size() > 0)
+  {
+    directedEdge edge = temp_edges_0_to_2[temp_edges_0_to_2.size() - 1];
+    edges_0_to_2[--row_pointers_0_to_2[edge.first - start_idx]] = edge.second;
+    temp_edges_0_to_2.pop_back();
+  }
+  start_idx = std::get<1>(partition_start_vertex_idx_tuple);
+  while (temp_edges_1_to_2.size() > 0)
+  {
+    directedEdge edge = temp_edges_1_to_2[temp_edges_1_to_2.size() - 1];
+    edges_1_to_2[--row_pointers_1_to_2[edge.first - start_idx]] = edge.second;
+    temp_edges_1_to_2.pop_back();
+  }
+
+  // pull up the 'creation_finished' flag
+  creation_finished = 1;
+
+  // sort and print the result into the logFile
+  logFile << "Type3SubGraph " << this_type3_subgraph_idx << " has finished reducing!\n";
+
+  logFile << "\t" << std::get<0>(this_subgraph_tuple) << " to " << std::get<1>(this_subgraph_tuple) << ":\n";
+  vidType partition_start_vertex_idx_0 = std::get<0>(partition_start_vertex_idx_tuple);
+  vidType partition_num_vertices_0 = std::get<0>(partition_num_vertices_tuple);
+  for (vidType u = partition_start_vertex_idx_0; u < partition_start_vertex_idx_0 + partition_num_vertices_0; u++)
+  {
+    std::sort(edges_0_to_1 + row_pointers_0_to_1[u - partition_start_vertex_idx_0], edges_0_to_1 + row_pointers_0_to_1[u + 1 - partition_start_vertex_idx_0]);
+    logFile << "\t\t" << u << ": ";
+    vidType u_0_to_1_deg = get_out_degree_0_to_1(u);
+    for (vidType v_idx = 0; v_idx < u_0_to_1_deg; v_idx++)
+      logFile << N_0_to_1(u, v_idx) << " ";
+    logFile << "\n";
+  }
+
+  logFile << "\t" << std::get<0>(this_subgraph_tuple) << " to " << std::get<2>(this_subgraph_tuple) << ":\n";
+  for (vidType u = partition_start_vertex_idx_0; u < partition_start_vertex_idx_0 + partition_num_vertices_0; u++)
+  {
+    std::sort(edges_0_to_2 + row_pointers_0_to_2[u - partition_start_vertex_idx_0], edges_0_to_2 + row_pointers_0_to_2[u + 1 - partition_start_vertex_idx_0]);
+    logFile << "\t\t" << u << ": ";
+    vidType u_0_to_2_deg = get_out_degree_0_to_2(u);
+    for (vidType w_idx = 0; w_idx < u_0_to_2_deg; w_idx++)
+      logFile << N_0_to_2(u, w_idx) << " ";
+    logFile << "\n";
+  }
+
+  logFile << "\t" << std::get<1>(this_subgraph_tuple) << " to " << std::get<2>(this_subgraph_tuple) << ":\n";
+  vidType partition_start_vertex_idx_1 = std::get<1>(partition_start_vertex_idx_tuple);
+  vidType partition_num_vertices_1 = std::get<1>(partition_num_vertices_tuple);
+  for (vidType v = partition_start_vertex_idx_1; v < partition_start_vertex_idx_1 + partition_num_vertices_1; v++)
+  {
+    std::sort(edges_1_to_2 + row_pointers_1_to_2[v - partition_start_vertex_idx_1], edges_1_to_2 + row_pointers_1_to_2[v + 1 - partition_start_vertex_idx_1]);
+    logFile << "\t\t" << v << ": ";
+    vidType v_1_to_2_deg = get_out_degree_1_to_2(v);
+    for (vidType w_idx = 0; w_idx < v_0_to_1_deg; w_idx++)
+      logFile << N_1_to_2(v, w_idx) << " ";
+    logFile << "\n";
+  }
+}
+
+vidType Type3SubGraph::get_out_degree_0_to_1(vidType u)
+{
+  // the function must be called after the creation of the subgraph has finished
+  if (creation_finished == 0)
+  {
+    std::cout << "Error! Subgraph creation has not finished, but 'get_out_degree_0_to_1()' is called!\n";
+    exit(-1);
+  }
+  vidType start_vertex_idx = std::get<0>(partition_start_vertex_idx_tuple);
+  return row_pointers_0_to_1[u - start_vertex_idx + 1] - row_pointers_0_to_1[u - start_vertex_idx];
+}
+
+vidType Type3SubGraph::get_out_degree_0_to_2(vidType u)
+{
+  // the function must be called after the creation of the subgraph has finished
+  if (creation_finished == 0)
+  {
+    std::cout << "Error! Subgraph creation has not finished, but 'get_out_degree_0_to_2()' is called!\n";
+    exit(-1);
+  }
+  vidType start_vertex_idx = std::get<0>(partition_start_vertex_idx_tuple);
+  return row_pointers_0_to_2[u - start_vertex_idx + 1] - row_pointers_0_to_2[u - start_vertex_idx];
+}
+
+vidType Type3SubGraph::get_out_degree_1_to_2(vidType v)
+{
+  // the function must be called after the creation of the subgraph has finished
+  if (creation_finished == 0)
+  {
+    std::cout << "Error! Subgraph creation has not finished, but 'get_out_degree_1_to_2()' is called!\n";
+    exit(-1);
+  }
+  vidType start_vertex_idx = std::get<1>(partition_start_vertex_idx_tuple);
+  return row_pointers_1_to_2[v - start_vertex_idx + 1] - row_pointers_1_to_2[v - start_vertex_idx];
+}
+
+vidType Type3SubGraph::N_0_to_1(vidType u, vidType n)
+{
+  // the function must be called after the creation of the subgraph has finished
+  if (creation_finished == 0)
+  {
+    std::cout << "Error! Subgraph creation has not finished, but 'N_0_to_1()' is called!\n";
+    exit(-1);
+  }
+  vidType start_vertex_idx = std::get<0>(partition_start_vertex_idx_tuple);
+  return edges_0_to_1[row_pointers_0_to_1[u - start_vertex_idx] + n];
+}
+
+vidType Type3SubGraph::N_0_to_2(vidType u, vidType n)
+{
+  // the function must be called after the creation of the subgraph has finished
+  if (creation_finished == 0)
+  {
+    std::cout << "Error! Subgraph creation has not finished, but 'N_0_to_2()' is called!\n";
+    exit(-1);
+  }
+  vidType start_vertex_idx = std::get<0>(partition_start_vertex_idx_tuple);
+  return edges_0_to_2[row_pointers_0_to_2[u - start_vertex_idx] + n];
+}
+
+vidType Type3SubGraph::N_1_to_2(vidType v, vidType n)
+{
+  // the function must be called after the creation of the subgraph has finished
+  if (creation_finished == 0)
+  {
+    std::cout << "Error! Subgraph creation has not finished, but 'N_1_to_2()' is called!\n";
+    exit(-1);
+  }
+  vidType start_vertex_idx = std::get<1>(partition_start_vertex_idx_tuple);
+  return edges_1_to_2[row_pointers_1_to_2[v - start_vertex_idx] + n];
 }
 
 /**************************************** Definition of tool functions ***************************************/
@@ -436,6 +622,8 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
   logFile << "Start reducing ...\n";
   for (int device_idx = 0; device_idx < device_count; device_idx++)
     type1_subgraphs[device_idx].reduce();
+  for (int type3_subgraph_idx = 0; type3_subgraph_idx < type3_subgraph_num; type3_subgraph_idx++)
+    type3_subgraphs[type3_subgraph_idx].reduce();
   logFile << "Finish reducing ...\n";
 
   // end and exit
@@ -443,7 +631,10 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
   for (int device_idx = 0; device_idx < device_count; device_idx++)
     type1_subgraphs[device_idx].destroy();
   logFile << "All the Type1SubGraphs have been destoyed!\n";
+  logFile << "Destoying Type3SubGraphs ...\n";
+  for (int type3_subgraph_idx = 0; type3_subgraph_idx < type3_subgraph_num; type3_subgraph_idx++)
+    type3_subgraphs[type3_subgraph_idx].destroy();
+  logFile << "All the Type3SubGraphs have been destoyed!\n";
   logFile << "Gracefully finishing ...\n";
   logFile.close();
 }
-
