@@ -16,6 +16,7 @@ typedef cub::BlockReduce<AccType, BLOCK_SIZE> BlockReduce;
 #include <fstream>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 /**************************************** Definition of SubGraphs ***************************************/
 
@@ -40,28 +41,32 @@ class Type1SubGraph {
     void init(Graph &g, int num_partitions, int this_partition_idx);
     void destroy();
     void add_edge(vidType from, vidType to);
+    void reduce();
     vidType get_out_degree(vidType u);
     vidType N(vidType u, vidType n);
 };
 
 // initialize the subgraph
-void Type1SubGraph::init(Graph &g, int num_partitions, int this_partition_idx) :
-    super_num_vertices(g.V()), num_partitions(num_partitions), this_partition_idx(this_partition_idx), creation_finished(0)
+void Type1SubGraph::init(Graph &g, int num_part, int this_part_idx)
 {
   // initialize its own logFile
-  std::string file_name = "Type1SubGraph_log" + std::to_string(this_partition_idx) + ".txt";
+  std::string file_name = "Type1SubGraph_log" + std::to_string(this_part_idx) + ".txt";
   logFile.open(file_name);
   if (!logFile)
   {
     std::cerr << "Cannot open " << file_name << "\n";
     exit(-1);
   }
-  logFile << "logFile created!\nType1SubGraph " << this_partition_idx << " initialization starts ...\n";
+  logFile << "logFile created!\nType1SubGraph " << this_part_idx << " initialization starts ...\n";
 
   // initialize private variables
+  super_num_vertices = g.V();
+  num_partitions = num_part;
+  this_partition_idx = this_part_idx;
   int normal_vertex_number_each_partition = (super_num_vertices - 1) / num_partitions + 1;
   start_vertex_idx = normal_vertex_number_each_partition * this_partition_idx;
   this_num_vertices = (this_partition_idx == num_partitions - 1) ? (super_num_vertices - normal_vertex_number_each_partition * (num_partitions - 1)) : normal_vertex_number_each_partition;
+  creation_finished = 0;
   logFile << "\tPrivate variables initialized!\n";
   logFile << "\t\tsuper_num_vertices = " << super_num_vertices << "\n";
   logFile << "\t\tnum_partitions = " << num_partitions << "\n";
@@ -131,14 +136,15 @@ void Type1SubGraph::reduce()
   // pull up the 'creation_finished' flag
   creation_finished = 1;
 
-  // print the result into the logFile
+  // sort and print the result into the logFile
   logFile << "Type1SubGraph " << this_partition_idx << " has finished reducing!\n";
   for (vidType u = start_vertex_idx; u < start_vertex_idx + this_num_vertices; u++)
   {
+    std::sort(edges + row_pointers[u - start_vertex_idx], edges + row_pointers[u + 1 - start_vertex_idx]);
     logFile << "\t" << u << ": ";
-    vidType u_deg = this->get_out_degree(u);
+    vidType u_deg = get_out_degree(u);
     for (vidType v_idx = 0; v_idx < u_deg; v_idx++)
-      logFile << this->N(u, v_idx) << " ";
+      logFile << N(u, v_idx) << " ";
     logFile << "\n";
   }
 }
@@ -212,7 +218,7 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
       for (vidType v_idx = 0; v_idx < u_deg; v_idx++)
       {
         vidType v = g.N(u, v_idx);
-        int v_partition_idx = v % normal_vertex_number_each_partition;
+        int v_partition_idx = v / normal_vertex_number_each_partition;
         if (device_idx == v_partition_idx)  // inner edge
           type1_subgraphs[device_idx].add_edge(u, v);
         else  // cross edge
