@@ -516,18 +516,18 @@ void get_type3_subgraph_tuple(int *this_subgraph_tuple, int this_type3_subgraph_
 }
 
 // given the device_count and three seperate partition index, calculate the global index of the Type3SubGraph
-int get_type3_subgraph_idx(int device_count, vidType u, vidType v, vidType w)
+int get_type3_subgraph_idx(int device_count, int u_device_idx, int v_device_idx, int w_device_idx)
 {
-  // sort the three vertices into increasing order
-  sort_three_vertices(&u, &v, &w);
+  // sort the three partitions into increasing order
+  sort_three_vertices(&u_device_idx, &v_device_idx, &w_device_idx);
 
   // accumulate index
   int type3_subgraph_idx = 0;
-  for (vidType ui = 0; ui < u; ui++)
+  for (vidType ui = 0; ui < u_device_idx; ui++)
     type3_subgraph_idx += (device_count - ui - 1) * (device_count - ui - 2) / 2;
-  for (vidType vi = u + 1; vi < v; vi++)
+  for (vidType vi = u_device_idx + 1; vi < v_device_idx; vi++)
     type3_subgraph_idx += device_count - vi - 1;
-  type3_subgraph_idx += w - v - 1;
+  type3_subgraph_idx += w_device_idx - v_device_idx - 1;
   return type3_subgraph_idx;
 }
 
@@ -590,8 +590,6 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
     type3_subgraphs[type3_subgraph_idx].init(g, device_count, type3_subgraph_idx);
   logFile << "\tAll the Type3SubGraphs created!\n";
 
-  std::cout << "excuse me\n";
-
   // map
   logFile << "Start mapping ...\n";
   int normal_vertex_number_each_partition = (super_graph_vertex_num - 1) / device_count + 1;
@@ -616,13 +614,15 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
           type1_subgraphs[v_partition_idx].add_edge(v, u);
 
           // Second, record into all the related Type3SubGraphs
-          for (vidType w = 0; w < device_count; w++)
+          for (vidType w_device_idx = 0; w_device_idx < device_count; w_device_idx++)
           {
-            if (w != u && w != v)
+            if (w_device_idx != device_idx && w_device_idx != v_partition_idx)
             {
-              int type3_subgraph_idx = get_type3_subgraph_idx(device_count, u, v, w);
+              int type3_subgraph_idx = get_type3_subgraph_idx(device_count, device_idx, v_partition_idx, w_device_idx);
               if (u < v)
+              {
                 type3_subgraphs[type3_subgraph_idx].add_edge(u, device_idx, v, v_partition_idx);
+              }
               else
                 type3_subgraphs[type3_subgraph_idx].add_edge(v, v_partition_idx, u, device_idx);
             }
@@ -633,8 +633,6 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
   }
   logFile << "Finish mapping!\n";
 
-  std::cout << "hello\n";
-
   // reduce
   logFile << "Start reducing ...\n";
   for (int device_idx = 0; device_idx < device_count; device_idx++)
@@ -642,8 +640,6 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
   for (int type3_subgraph_idx = 0; type3_subgraph_idx < type3_subgraph_num; type3_subgraph_idx++)
     type3_subgraphs[type3_subgraph_idx].reduce();
   logFile << "Finish reducing ...\n";
-
-  std::cout << "hi\n";
 
   // end and exit
   logFile << "Destoying Type1SubGraphs ...\n";
