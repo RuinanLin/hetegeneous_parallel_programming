@@ -19,6 +19,7 @@ typedef cub::BlockReduce<AccType, BLOCK_SIZE> BlockReduce;
 #include <algorithm>
 #include <tuple>
 #include <omp.h>
+#include "set_intersect.cuh"
 
 typedef std::pair<vidType, vidType> directedEdge;
 
@@ -26,6 +27,8 @@ int get_type3_subgraph_num(int device_count);
 void get_type3_subgraph_tuple(int *this_subgraph_tuple, int this_type3_subgraph_idx, int num_partitions);
 int get_type3_subgraph_idx(int device_count, vidType u, vidType v, vidType w);
 void sort_three_vertices(vidType *u, vidType *v, vidType *w);
+__global__ void warp_vertex_type1(vidType *d_start_vertex_idx, vidType *d_this_num_vertices, AccType *d_count, vidType *d_edges, eidType *d_row_pointers, eidType *d_inner_edge_starts, eidType *d_inner_edge_ends);
+__global__ void warp_vertex_type3(vidType *d_start_vertex_idx, vidType *d_this_num_vertices, AccType *d_count, vidType *d_edges_0_to_1, eidType *d_row_pointers_0_to_1, vidType *d_edges_0_to_2, eidType *d_row_pointers_0_to_2, vidType *d_edges_1_to_2, eidType *d_row_pointers_1_to_2);
 
 /**************************************** Definition of Type1SubGraph ***************************************/
 
@@ -141,8 +144,11 @@ void Type1SubGraph::add_edge(vidType from, vidType to)
   vidType normal_vertex_number_each_partition = (super_num_vertices - 1) / num_partitions + 1;
   int to_partition_idx = to / normal_vertex_number_each_partition;
   if (to_partition_idx < this_partition_idx)
+  {
     inner_edge_starts[from - start_vertex_idx]++;
-  if (to_partition_idx <= this_partition_idx)
+    inner_edge_ends[from - start_vertex_idx]++;
+  }
+  if (to_partition_idx == this_partition_idx)
     inner_edge_ends[from - start_vertex_idx]++;
 }
 
@@ -220,18 +226,20 @@ eidType * Type1SubGraph::get_inner_edge_ends_pointer() { return inner_edge_ends;
 class Type1SubGraphGPU {
   protected:
     vidType start_vertex_idx;             // the start index of the vertices in this partition, in the global view
+    vidType *d_start_vertex_idx;
     vidType this_num_vertices;            // how many vertices in this partition
+    vidType *d_this_num_vertices;
     eidType num_edges;                    // how many edges in this partition
 
     vidType *h_edges;
-    vidType *d_edges;                       // column indices of CSR format, starting point only inner
+    vidType *d_edges;                     // column indices of CSR format, starting point only inner
     eidType *h_row_pointers;
-    eidType *d_row_pointers;                // row pointers of CSR format, starting point only inner
+    eidType *d_row_pointers;              // row pointers of CSR format, starting point only inner
 
     eidType *h_inner_edge_starts;
-    eidType *d_inner_edge_starts;           // for each edge in the partition, point out its first inner edge's index
+    eidType *d_inner_edge_starts;         // for each edge in the partition, point out its first inner edge's index
     eidType *h_inner_edge_ends;
-    eidType *d_inner_edge_ends;             // for each edge in the partition, point out the end of the inner edges
+    eidType *d_inner_edge_ends;           // for each edge in the partition, point out the end of the inner edges
 
     AccType h_count;
     AccType *d_count;
@@ -239,6 +247,7 @@ class Type1SubGraphGPU {
   public:
     void init(Type1SubGraph &g);
     void launch();
+    AccType get_count();
 };
 
 // initialize the Type1SubGraphGPU
@@ -259,22 +268,40 @@ void Type1SubGraphGPU::init(Type1SubGraph &g)
 void Type1SubGraphGPU::launch()
 {
   // allocate device memory
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_start_vertex_idx, sizeof(vidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_start_vertex_idx, &start_vertex_idx, sizeof(vidType), cudaMemcpyHostToDevice));
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_this_num_vertices, sizeof(vidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_this_num_vertices, &this_num_vertices, sizeof(vidType), cudaMemcpyHostToDevice));
   CUDA_SAFE_CALL(cudaMalloc((void **)&d_edges, num_edges * sizeof(vidType)));
   CUDA_SAFE_CALL(cudaMemcpy(d_edges, h_edges, num_edges * sizeof(vidType), cudaMemcpyHostToDevice));
   CUDA_SAFE_CALL(cudaMalloc((void **)&d_row_pointers, (this_num_vertices + 1) * sizeof(eidType)));
   CUDA_SAFE_CALL(cudaMemcpy(d_row_pointers, h_row_pointers, (this_num_vertices + 1) * sizeof(eidType), cudaMemcpyHostToDevice));
   CUDA_SAFE_CALL(cudaMalloc((void **)&d_inner_edge_starts, this_num_vertices * sizeof(eidType)));
-  CUDA_SAFE_CALL(cudaMemcpy(d_inner_edge_starts, h_inner_edge_starts, this_num_vertices * sizeof(eidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_inner_edge_starts, h_inner_edge_starts, this_num_vertices * sizeof(eidType), cudaMemcpyHostToDevice));
   CUDA_SAFE_CALL(cudaMalloc((void **)&d_inner_edge_ends, this_num_vertices * sizeof(eidType)));
-  CUDA_SAFE_CALL(cudaMemcpy(d_inner_edge_ends, h_inner_edge_ends, this_num_vertices * sizeof(eidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_inner_edge_ends, h_inner_edge_ends, this_num_vertices * sizeof(eidType), cudaMemcpyHostToDevice));
   CUDA_SAFE_CALL(cudaMalloc((void **)&d_count, sizeof(AccType)));
   CUDA_SAFE_CALL(cudaMemcpy(d_count, &h_count, sizeof(AccType), cudaMemcpyHostToDevice));
 
   // launch kernel
   size_t nthreads = BLOCK_SIZE;
-  size_t nblocks = 
-  warp_vertex_type1<<<
+  size_t nblocks = (this_num_vertices - 1) / WARPS_PER_BLOCK + 1;
+  if (nblocks > 65536) nblocks = 65536;
+  warp_vertex_type1<<<nblocks, nthreads>>>(d_start_vertex_idx, d_this_num_vertices, d_count, d_edges, d_row_pointers, d_inner_edge_starts, d_inner_edge_ends);
+
+  // copy the result out and free the allocated device memory
+  CUDA_SAFE_CALL(cudaMemcpy(&h_count, d_count, sizeof(AccType), cudaMemcpyDeviceToHost));
+  CUDA_SAFE_CALL(cudaFree(d_start_vertex_idx));
+  CUDA_SAFE_CALL(cudaFree(d_this_num_vertices));
+  CUDA_SAFE_CALL(cudaFree(d_edges));
+  CUDA_SAFE_CALL(cudaFree(d_row_pointers));
+  CUDA_SAFE_CALL(cudaFree(d_inner_edge_starts));
+  CUDA_SAFE_CALL(cudaFree(d_inner_edge_ends));
+  CUDA_SAFE_CALL(cudaFree(d_count));
 }
+
+// get the count of this Type1SubGraphGPU
+AccType Type1SubGraphGPU::get_count() { return h_count; }
 
 /**************************************** Definition of Type3SubGraph ***************************************/
 
@@ -285,7 +312,7 @@ class Type3SubGraph {
     int this_subgraph_tuple[3];                                             // records the three indices of the partitions, sorted
     vidType super_num_vertices;                                             // how many vertices in the super graph
     vidType partition_num_vertices_tuple[3];                                // how many vertices are there in each partition
-    vidType partition_start_vertex_idx_tuple[3]; // each partition starts at which vertex
+    vidType partition_start_vertex_idx_tuple[3];                            // each partition starts at which vertex
     std::ofstream logFile;                                                  // its own logFile
 
     vidType *edges_0_to_1;
@@ -313,6 +340,17 @@ class Type3SubGraph {
     vidType N_0_to_1(vidType u, vidType n);
     vidType N_0_to_2(vidType u, vidType n);
     vidType N_1_to_2(vidType v, vidType n);
+    vidType *get_partition_start_vertex_idx_tuple();
+    vidType *get_partition_num_vertices_tuple();
+    vidType *get_edges_0_to_1();
+    eidType get_num_edges_0_to_1();
+    eidType *get_row_pointers_0_to_1();
+    vidType *get_edges_0_to_2();
+    eidType get_num_edges_0_to_2();
+    eidType *get_row_pointers_0_to_2();
+    vidType *get_edges_1_to_2();
+    eidType get_num_edges_1_to_2();
+    eidType *get_row_pointers_1_to_2();
 };
 
 // initialize the subgraph
@@ -563,7 +601,17 @@ vidType Type3SubGraph::N_1_to_2(vidType v, vidType n)
   return edges_1_to_2[row_pointers_1_to_2[v - start_vertex_idx] + n];
 }
 
-/**************************************** Definition of tool functions ***************************************/
+vidType * Type3SubGraph::get_partition_start_vertex_idx_tuple() { return partition_start_vertex_idx_tuple; }
+vidType * Type3SubGraph::get_partition_num_vertices_tuple() { return partition_num_vertices_tuple; }
+vidType * Type3SubGraph::get_edges_0_to_1() { return edges_0_to_1; }
+eidType Type3SubGraph::get_num_edges_0_to_1() { return row_pointers_0_to_1[partition_num_vertices_tuple[0]]; }
+eidType * Type3SubGraph::get_row_pointers_0_to_1() { return row_pointers_0_to_1; }
+vidType * Type3SubGraph::get_edges_0_to_2() { return edges_0_to_2; }
+eidType Type3SubGraph::get_num_edges_0_to_2() { return row_pointers_0_to_2[partition_num_vertices_tuple[0]]; }
+eidType * Type3SubGraph::get_row_pointers_0_to_2() { return row_pointers_0_to_2; }
+vidType * Type3SubGraph::get_edges_1_to_2() { return edges_1_to_2; }
+eidType Type3SubGraph::get_num_edges_1_to_2() { return row_pointers_1_to_2[partition_num_vertices_tuple[1]]; }
+eidType * Type3SubGraph::get_row_pointers_1_to_2() { return row_pointers_1_to_2; }
 
 // given the device_count, calculate how many Type3SubGraphs
 int get_type3_subgraph_num(int device_count)
@@ -649,6 +697,153 @@ void sort_three_vertices(vidType *u, vidType *v, vidType *w)
     *v = *u;
     *u = temp;
   }
+}
+
+/**************************************** Definition of Type3SubGraph ***************************************/
+
+class Type3SubGraphGPU {
+  protected:
+    vidType *start_vertex_idx;    // the array of the three start vertex indices
+    vidType *d_start_vertex_idx;
+    vidType *this_num_vertices;   // the array of the numbers of the three partitions
+    vidType *d_this_num_vertices;
+
+    vidType *h_edges_0_to_1;
+    vidType *d_edges_0_to_1;
+    eidType num_edges_0_to_1;
+    eidType *h_row_pointers_0_to_1;
+    eidType *d_row_pointers_0_to_1;
+
+    vidType *h_edges_0_to_2;
+    vidType *d_edges_0_to_2;
+    eidType num_edges_0_to_2;
+    eidType *h_row_pointers_0_to_2;
+    eidType *d_row_pointers_0_to_2;
+
+    vidType *h_edges_1_to_2;
+    vidType *d_edges_1_to_2;
+    eidType num_edges_1_to_2;
+    eidType *h_row_pointers_1_to_2;
+    eidType *d_row_pointers_1_to_2;
+
+    AccType h_count;
+    AccType *d_count;
+
+  public:
+    void init(Type3SubGraph &g);
+    void launch();
+    AccType get_count();
+};
+
+// initialize some of the protected variables
+void Type3SubGraphGPU::init(Type3SubGraph &g)
+{
+  start_vertex_idx = g.get_partition_start_vertex_idx_tuple();
+  this_num_vertices = g.get_partition_num_vertices_tuple();
+
+  h_edges_0_to_1 = g.get_edges_0_to_1();
+  num_edges_0_to_1 = g.get_num_edges_0_to_1();
+  h_row_pointers_0_to_1 = g.get_row_pointers_0_to_1();
+
+  h_edges_0_to_2 = g.get_edges_0_to_2();
+  num_edges_0_to_2 = g.get_num_edges_0_to_2();
+  h_row_pointers_0_to_2 = g.get_row_pointers_0_to_2();
+
+  h_edges_1_to_2 = g.get_edges_1_to_2();
+  num_edges_1_to_2 = g.get_num_edges_1_to_2();
+  h_row_pointers_1_to_2 = g.get_row_pointers_1_to_2();
+
+  h_count = 0;
+}
+
+// launch the kernel function
+void Type3SubGraphGPU::launch()
+{
+  // allocate device memory
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_start_vertex_idx, 3 * sizeof(vidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_start_vertex_idx, start_vertex_idx, 3 * sizeof(vidType), cudaMemcpyHostToDevice));
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_this_num_vertices, 3 * sizeof(vidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_this_num_vertices, this_num_vertices, 3 * sizeof(vidType), cudaMemcpyHostToDevice));
+
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_edges_0_to_1, num_edges_0_to_1 * sizeof(vidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_edges_0_to_1, h_edges_0_to_1, num_edges_0_to_1 * sizeof(vidType), cudaMemcpyHostToDevice));
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_row_pointers_0_to_1, (this_num_vertices[0] + 1) * sizeof(eidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_row_pointers_0_to_1, h_row_pointers_0_to_1, (this_num_vertices[0] + 1) * sizeof(eidType), cudaMemcpyHostToDevice));
+
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_edges_0_to_2, num_edges_0_to_2 * sizeof(vidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_edges_0_to_2, h_edges_0_to_2, num_edges_0_to_2 * sizeof(vidType), cudaMemcpyHostToDevice));
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_row_pointers_0_to_2, (this_num_vertices[0] + 1) * sizeof(eidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_row_pointers_0_to_2, h_row_pointers_0_to_2, (this_num_vertices[0] + 1) * sizeof(eidType), cudaMemcpyHostToDevice));
+
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_edges_1_to_2, num_edges_1_to_2 * sizeof(vidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_edges_1_to_2, h_edges_1_to_2, num_edges_1_to_2 * sizeof(vidType), cudaMemcpyHostToDevice));
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_row_pointers_1_to_2, (this_num_vertices[1] + 1) * sizeof(eidType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_row_pointers_1_to_2, h_row_pointers_1_to_2, (this_num_vertices[1] + 1) * sizeof(eidType), cudaMemcpyHostToDevice));
+
+  CUDA_SAFE_CALL(cudaMalloc((void **)&d_count, sizeof(AccType)));
+  CUDA_SAFE_CALL(cudaMemcpy(d_count, &h_count, sizeof(AccType), cudaMemcpyHostToDevice));
+
+  // launch kernel
+  size_t nthreads = BLOCK_SIZE;
+  size_t nblocks = (this_num_vertices[0] - 1) / WARPS_PER_BLOCK + 1;
+  if (nblocks > 65536) nblocks = 65536;
+  warp_vertex_type3<<<nblocks, nthreads>>>(d_start_vertex_idx, d_this_num_vertices, d_count, d_edges_0_to_1, d_row_pointers_0_to_1, d_edges_0_to_2, d_row_pointers_0_to_2, d_edges_1_to_2, d_row_pointers_1_to_2);
+
+  // copy the result out and free the allocated device memory
+  CUDA_SAFE_CALL(cudaMemcpy(&h_count, d_count, sizeof(AccType), cudaMemcpyDeviceToHost));
+  CUDA_SAFE_CALL(cudaFree(d_start_vertex_idx));
+  CUDA_SAFE_CALL(cudaFree(d_this_num_vertices));
+  CUDA_SAFE_CALL(cudaFree(d_edges_0_to_1));
+  CUDA_SAFE_CALL(cudaFree(d_row_pointers_0_to_1));
+  CUDA_SAFE_CALL(cudaFree(d_edges_0_to_2));
+  CUDA_SAFE_CALL(cudaFree(d_row_pointers_0_to_2));
+  CUDA_SAFE_CALL(cudaFree(d_edges_1_to_2));
+  CUDA_SAFE_CALL(cudaFree(d_row_pointers_1_to_2));
+  CUDA_SAFE_CALL(cudaFree(d_count));
+
+}
+
+/**************************************** Definition of tool functions ***************************************/
+
+__global__
+void warp_vertex_type1(vidType *d_start_vertex_idx, vidType *d_this_num_vertices, AccType *d_count, vidType *d_edges, eidType *d_row_pointers, eidType *d_inner_edge_starts, eidType *d_inner_edge_ends)
+{
+
+  // allocate a space for map-reduce
+    __shared__ AccType partial_sum[BLOCK_SIZE];
+
+    // calculate the global index of the warp
+    int global_warp_idx = (blockDim.x * blockIdx.x + threadIdx.x) / WARP_SIZE;
+    int total_warp_num = gridDim.x * blockDim.x / WARP_SIZE;
+    
+    // implement calculation of the vertecies
+    AccType cnt = 0;
+    for (vidType u_idx = global_warp_idx; u_idx < *d_this_num_vertices; u_idx += total_warp_num)
+    {
+      for (eidType v_idx_in_u_array = d_inner_edge_starts[u_idx]; v_idx_in_u_array < d_inner_edge_ends[u_idx]; v_idx_in_u_array++)
+      {
+        vidType v = d_edges[d_row_pointers[u_idx] + v_idx_in_u_array];
+        vidType v_idx = v - *d_start_vertex_idx;
+        cnt += intersect_num(d_edges + d_row_pointers[u_idx], (vidType)(d_row_pointers[u_idx + 1] - d_row_pointers[u_idx]), d_edges + d_row_pointers[v_idx], (vidType)(d_row_pointers[v_idx + 1] - d_row_pointers[v_idx]));
+      }
+    }
+    partial_sum[threadIdx.x] = cnt;
+
+    // reduce
+    for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
+    {
+        __syncthreads();
+        if (threadIdx.x < stride)
+            partial_sum[threadIdx.x] += partial_sum[threadIdx.x + stride];
+    }
+    if (threadIdx.x == 0)
+        atomicAdd(d_count, partial_sum[0]);
+}
+
+__global__
+void warp_vertex_type3(vidType *d_start_vertex_idx, vidType *d_this_num_vertices, AccType *d_count, vidType *d_edges_0_to_1, eidType *d_row_pointers_0_to_1, vidType *d_edges_0_to_2, eidType *d_row_pointers_0_to_2, vidType *d_edges_1_to_2, eidType *d_row_pointers_1_to_2)
+{
+  
 }
 
 /**************************************** Definition of TCSolver ***************************************/
@@ -759,8 +954,8 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
   for (auto &thread: init_threads) thread.join();
   logFile << "Finish initializing Type1SubGraphGPU!\n";
 
-  // create streams and allocate device memory
-  logFile << "Start allocating device memory ...\n";
+  // launch
+  logFile << "Start launching kernel functions ...\n";
   std::vector<std::thread> gpu_threads;
   for (int device_idx = 0; device_idx < device_count; device_idx++)
   {
@@ -769,9 +964,20 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
       CUDA_SAFE_CALL(cudaSetDevice(device_idx));
       CUDA_SAFE_CALL(cudaDeviceSynchronize());
 
-      // launch
+      // launch Type1SubGraphGPU
       type1_subgraphs_on_gpu[device_idx].launch();
     }));
+  }
+  for (auto &thread: gpu_threads) thread.join();
+  logFile << "Kernel functions finished!\n";
+
+  // gather results
+  logFile << "Gathering results ...\n";
+  for (int device_idx = 0; device_idx < device_count; device_idx++)
+  {
+    AccType each_count = type1_subgraphs_on_gpu[device_idx].get_count();
+    logFile << "\tNumber of triangles in Type1SubGraph " << device_idx << " :" << each_count << "\n";
+    total += each_count;
   }
 
   // end and exit
