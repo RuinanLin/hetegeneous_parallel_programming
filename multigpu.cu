@@ -800,50 +800,79 @@ void Type3SubGraphGPU::launch()
   CUDA_SAFE_CALL(cudaFree(d_edges_1_to_2));
   CUDA_SAFE_CALL(cudaFree(d_row_pointers_1_to_2));
   CUDA_SAFE_CALL(cudaFree(d_count));
-
 }
+
+// get the answer of the subgraph
+AccType Type3SubGraphGPU::get_count() { return h_count; }
 
 /**************************************** Definition of tool functions ***************************************/
 
 __global__
 void warp_vertex_type1(vidType *d_start_vertex_idx, vidType *d_this_num_vertices, AccType *d_count, vidType *d_edges, eidType *d_row_pointers, eidType *d_inner_edge_starts, eidType *d_inner_edge_ends)
 {
-
   // allocate a space for map-reduce
-    __shared__ AccType partial_sum[BLOCK_SIZE];
+  __shared__ AccType partial_sum[BLOCK_SIZE];
 
-    // calculate the global index of the warp
-    int global_warp_idx = (blockDim.x * blockIdx.x + threadIdx.x) / WARP_SIZE;
-    int total_warp_num = gridDim.x * blockDim.x / WARP_SIZE;
-    
-    // implement calculation of the vertecies
-    AccType cnt = 0;
-    for (vidType u_idx = global_warp_idx; u_idx < *d_this_num_vertices; u_idx += total_warp_num)
+  // calculate the global index of the warp
+  int global_warp_idx = (blockDim.x * blockIdx.x + threadIdx.x) / WARP_SIZE;
+  int total_warp_num = gridDim.x * blockDim.x / WARP_SIZE;
+  
+  // implement calculation of the vertecies
+  AccType cnt = 0;
+  for (vidType u_idx = global_warp_idx; u_idx < *d_this_num_vertices; u_idx += total_warp_num)
+  {
+    for (eidType v_idx_in_u_array = d_inner_edge_starts[u_idx]; v_idx_in_u_array < d_inner_edge_ends[u_idx]; v_idx_in_u_array++)
     {
-      for (eidType v_idx_in_u_array = d_inner_edge_starts[u_idx]; v_idx_in_u_array < d_inner_edge_ends[u_idx]; v_idx_in_u_array++)
-      {
-        vidType v = d_edges[d_row_pointers[u_idx] + v_idx_in_u_array];
-        vidType v_idx = v - *d_start_vertex_idx;
-        cnt += intersect_num(d_edges + d_row_pointers[u_idx], (vidType)(d_row_pointers[u_idx + 1] - d_row_pointers[u_idx]), d_edges + d_row_pointers[v_idx], (vidType)(d_row_pointers[v_idx + 1] - d_row_pointers[v_idx]));
-      }
+      vidType v = d_edges[d_row_pointers[u_idx] + v_idx_in_u_array];
+      vidType v_idx = v - *d_start_vertex_idx;
+      cnt += intersect_num(d_edges + d_row_pointers[u_idx], (vidType)(d_row_pointers[u_idx + 1] - d_row_pointers[u_idx]), d_edges + d_row_pointers[v_idx], (vidType)(d_row_pointers[v_idx + 1] - d_row_pointers[v_idx]));
     }
-    partial_sum[threadIdx.x] = cnt;
+  }
+  partial_sum[threadIdx.x] = cnt;
 
-    // reduce
-    for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
-    {
-        __syncthreads();
-        if (threadIdx.x < stride)
-            partial_sum[threadIdx.x] += partial_sum[threadIdx.x + stride];
-    }
-    if (threadIdx.x == 0)
-        atomicAdd(d_count, partial_sum[0]);
+  // reduce
+  for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
+  {
+      __syncthreads();
+      if (threadIdx.x < stride)
+          partial_sum[threadIdx.x] += partial_sum[threadIdx.x + stride];
+  }
+  if (threadIdx.x == 0)
+      atomicAdd(d_count, partial_sum[0]);
 }
 
 __global__
 void warp_vertex_type3(vidType *d_start_vertex_idx, vidType *d_this_num_vertices, AccType *d_count, vidType *d_edges_0_to_1, eidType *d_row_pointers_0_to_1, vidType *d_edges_0_to_2, eidType *d_row_pointers_0_to_2, vidType *d_edges_1_to_2, eidType *d_row_pointers_1_to_2)
 {
+  // allocate a space for map-reduce
+  __shared__ AccType partial_sum[BLOCK_SIZE];
+
+  // calculate the global index of the warp
+  int global_warp_idx = (blockDim.x * blockIdx.x + threadIdx.x) / WARP_SIZE;
+  int total_warp_num = gridDim.x * blockDim.x / WARP_SIZE;
   
+  // implement calculation of the vertecies
+  AccType cnt = 0;
+  for (vidType u_idx = global_warp_idx; u_idx < d_this_num_vertices[0]; u_idx += total_warp_num)
+  {
+    for (eidType v_idx_in_0_array = d_row_pointers_0_to_1[u_idx]; v_idx_in_0_array < d_row_pointers_0_to_1[u_idx + 1]; v_idx_in_0_array++)
+    {
+      vidType v = d_edges_0_to_1[v_idx_in_0_array];
+      vidType v_idx = v - d_start_vertex_idx[1];
+      cnt += intersect_num(d_edges_0_to_2 + d_row_pointers_0_to_2[u_idx], (vidType)(d_row_pointers_0_to_2[u_idx + 1] - d_row_pointers_0_to_2[u_idx]), d_edges_1_to_2 + d_row_pointers_1_to_2[v_idx], (vidType)(d_row_pointers_1_to_2[v_idx + 1] - d_row_pointers_1_to_2[v_idx]));
+    }
+  }
+  partial_sum[threadIdx.x] = cnt;
+
+  // reduce
+  for (int stride = blockDim.x / 2; stride > 0; stride /= 2)
+  {
+      __syncthreads();
+      if (threadIdx.x < stride)
+          partial_sum[threadIdx.x] += partial_sum[threadIdx.x + stride];
+  }
+  if (threadIdx.x == 0)
+      atomicAdd(d_count, partial_sum[0]);
 }
 
 /**************************************** Definition of TCSolver ***************************************/
@@ -938,17 +967,23 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
   logFile << "Finish reducing ...\n";
 
   // initialize classes on GPU
-  logFile << "Start initializing Type1SubGraphGPU ...\n";
+  logFile << "Start initializing classes ...\n";
   std::vector<Type1SubGraphGPU> type1_subgraphs_on_gpu(device_count);
-
+  std::vector<Type3SubGraphGPU> type3_subgraphs_on_gpu(type3_subgraph_num);
   std::vector<std::thread> init_threads;
   for (int device_idx = 0; device_idx < device_count; device_idx++)
   {
     init_threads.push_back(std::thread([&, device_idx]() {
+      // Type1SubGraphGPU
       type1_subgraphs_on_gpu[device_idx].init(type1_subgraphs[device_idx]);
-      for (int i = 0; i < 200; i++)
-        std::cout << "\tThis is " << device_idx << "\n";
       std::cout << "\tType1SubGraphGPU " << device_idx << " finishes!\n";
+
+      // Type3SubGraphGPU
+      for (int type3_subgraph_idx = device_idx; type3_subgraph_idx < type3_subgraph_num; type3_subgraph_idx += device_count)
+      {
+        type3_subgraphs_on_gpu[type3_subgraph_idx].init(type3_subgraphs[type3_subgraph_idx]);
+        std::cout << "\tType3SubGraphGPU " << type3_subgraph_idx << " finishes!\n";
+      }
     }));
   }
   for (auto &thread: init_threads) thread.join();
@@ -966,6 +1001,10 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
 
       // launch Type1SubGraphGPU
       type1_subgraphs_on_gpu[device_idx].launch();
+
+      // launch Type3SubGraphGPU
+      for (int type3_subgraph_idx = device_idx; type3_subgraph_idx < type3_subgraph_num; type3_subgraph_idx += device_count)
+        type3_subgraphs_on_gpu[type3_subgraph_idx].launch();
     }));
   }
   for (auto &thread: gpu_threads) thread.join();
@@ -977,6 +1016,12 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
   {
     AccType each_count = type1_subgraphs_on_gpu[device_idx].get_count();
     logFile << "\tNumber of triangles in Type1SubGraph " << device_idx << " :" << each_count << "\n";
+    total += each_count;
+  }
+  for (int type3_subgraph_idx = 0; type3_subgraph_idx < type3_subgraph_num; type3_subgraph_idx++)
+  {
+    AccType each_count = type3_subgraphs_on_gpu[type3_subgraph_idx].get_count();
+    logFile << "\tNumber of triangles in Type3SubGraph " << type3_subgraph_idx << " :" << each_count << "\n";
     total += each_count;
   }
 
