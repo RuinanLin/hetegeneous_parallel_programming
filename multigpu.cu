@@ -43,6 +43,9 @@ class Type1SubGraph {
     std::vector<directedEdge> temp_edges; // for the process of generating, allowing start from outer
     int creation_finished;                // whether the subgraph has finished creating
 
+    eidType *inner_edge_starts;           // for each edge in the partition, point out its first inner edge's index
+    eidType *inner_edge_ends;             // for each edge in the partition, point out the end of the inner edges
+
   public:
     void init(Graph &g, int num_partitions, int this_partition_idx);
     void destroy();
@@ -86,6 +89,13 @@ void Type1SubGraph::init(Graph &g, int num_part, int this_part_idx)
   row_pointers = (eidType *)malloc((this_num_vertices + 1) * sizeof(eidType));
   for (eidType u = 0; u < this_num_vertices + 1; u++)
     row_pointers[u] = 0;
+  inner_edge_starts = (eidType *)malloc(this_num_vertices * sizeof(eidType));
+  inner_edge_ends = (eidType *)malloc(this_num_vertices * sizeof(eidType));
+  for (eidType u = 0; u < this_num_vertices; u++)
+  {
+    inner_edge_starts[u] = 0;
+    inner_edge_ends[u] = 0;
+  }
 
   // finish initialization and exit
   logFile << "Initialization succeeded!\n";
@@ -100,6 +110,8 @@ void Type1SubGraph::destroy()
   logFile << "\tFree the allocated memory ...\n";
   free(edges);
   free(row_pointers);
+  free(inner_edge_starts);
+  free(inner_edge_ends);
   logFile << "\tAllocated memory freed!\n";
 
   // close the logFile
@@ -116,6 +128,14 @@ void Type1SubGraph::add_edge(vidType from, vidType to)
   // create a pair
   directedEdge edge(from, to);
   temp_edges.push_back(edge);
+
+  // refresh the inner_edge pointers
+  vidType normal_vertex_number_each_partition = (super_num_vertices - 1) / num_partitions + 1;
+  int to_partition_idx = to / normal_vertex_number_each_partition;
+  if (to_partition_idx < this_partition_idx)
+    inner_edge_starts[from - start_vertex_idx]++;
+  if (to_partition_idx <= this_partition_idx)
+    inner_edge_ends[from - start_vertex_idx]++;
 }
 
 // reorder the temp_edges and create the final CSR format
@@ -151,7 +171,7 @@ void Type1SubGraph::reduce()
     vidType u_deg = get_out_degree(u);
     for (vidType v_idx = 0; v_idx < u_deg; v_idx++)
       logFile << N(u, v_idx) << " ";
-    logFile << "\n";
+    logFile << "\n\t\t" << inner_edge_starts[u - start_vertex_idx] << "; " << inner_edge_ends[u - start_vertex_idx] << "\n";
   }
 }
 
