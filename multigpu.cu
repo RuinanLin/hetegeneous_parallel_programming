@@ -1023,7 +1023,7 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
       }
 
       CUDA_SAFE_CALL(cudaDeviceSynchronize());
-      subt[device_count].Stop();
+      subt[device_idx].Stop();
     }));
   }
   for (auto &thread: gpu_threads) thread.join();
