@@ -1001,13 +1001,10 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
   std::vector<cudaStream_t> streams_for_type1(device_count);
   std::vector<cudaStream_t> streams_for_type3(type3_subgraph_num);
   t.Start();
-
-  // omp_set_num_threads(device_count);
-  #pragma omp parallel for
+  std::vector<std::thread> gpu_threads;
   for (int device_idx = 0; device_idx < device_count; device_idx++)
   {
-    // int device_idx = omp_get_thread_num();
-
+    gpu_threads.push_back(std::thread([&, device_idx]() {
       // set the device in each thread
       CUDA_SAFE_CALL(cudaSetDevice(device_idx));
       CUDA_SAFE_CALL(cudaDeviceSynchronize());
@@ -1026,11 +1023,11 @@ void TCSolver(Graph &g, uint64_t &total, int n_gpus, int chunk_size) {
       }
 
       CUDA_SAFE_CALL(cudaDeviceSynchronize());
-
-      std::cout << device_idx << " on " << omp_get_thread_num() << " finished!\n";
       subt[device_count].Stop();
-    // }));
+    }));
   }
+  for (auto &thread: gpu_threads) thread.join();
+  CUDA_SAFE_CALL(cudaDeviceSynchronize());
   t.Stop();
   // logFile << "Kernel functions finished!\n";
 
