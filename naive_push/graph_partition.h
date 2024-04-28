@@ -3,6 +3,7 @@
 #pragma once
 
 #include "graph.h"
+#include "metis.h"
 
 typedef std::pair<vidType, vidType> Edge;
 typedef std::vector<Edge> EdgeList;
@@ -21,7 +22,7 @@ private:
   std::vector<vidType> begin_vids, end_vids, local_begin, local_end;
   VertexLists idx_map;                      // local to global vertex id mapping
 
-  std::vector<vidType> vertex_local_indices;
+  idx_t *part;   // the metis result
 
   // generate the vertex-induced subgraph from a vertex subset 
   void generate_induced_subgraph(std::vector<int8_t> v_masks, Graph *g, Graph *subg, int i);
@@ -36,6 +37,9 @@ public:
   int get_num_subgraphs() { return num_subgraphs; }
   vidType get_local_begin(int i) { return local_begin[i]; } // get local id of the first master vertex for the i-th subgraph
   vidType get_local_end(int i) { return local_end[i]; } // get local id of the last master vertex for the i-th subgraph
+
+  idx_t *get_metis_part() { return part; }
+  vidType *get_vertex_list(int sg_id) { return &verts_of_clusters[sg_id][0]; }
 
   // naive 1D partitioning, i.e., edge-cut
   void edgecut_partition1D();

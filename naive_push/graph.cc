@@ -42,11 +42,11 @@ Graph::Graph(std::string prefix, bool use_dag, bool directed,
 
   if (is_directed_) {
     std::cout << "This is a directed graph\n";
-    if (need_reverse) {
-      build_reverse_graph();
-      std::cout << "This graph maintains both incomming and outgoing edge-list\n";
-      has_reverse = true;
-    }
+    // if (need_reverse) {
+    //   build_reverse_graph();
+    //   std::cout << "This graph maintains both incomming and outgoing edge-list\n";
+    //   has_reverse = true;
+    // }
   } else {
     has_reverse = true;
     reverse_vertices = vertices;
@@ -145,30 +145,30 @@ void Graph::sort_neighbors() {
   }
 }
 
-void Graph::build_reverse_graph() {
-  std::vector<VertexList> reverse_adj_lists(n_vertices);
-  for (vidType v = 0; v < n_vertices; v++) {
-    for (auto u : N(v)) {
-      reverse_adj_lists[u].push_back(v);
-    }
-  }
-  reverse_vertices = custom_alloc_global<eidType>(n_vertices+1);
-  reverse_vertices[0] = 0;
-  for (vidType i = 1; i < n_vertices+1; i++) {
-    auto degree = reverse_adj_lists[i-1].size();
-    reverse_vertices[i] = reverse_vertices[i-1] + degree;
-  }
-  reverse_edges = custom_alloc_global<vidType>(n_edges);
-  //#pragma omp parallel for
-  for (vidType i = 0; i < n_vertices; i++) {
-    auto begin = reverse_vertices[i];
-    // std::copy(reverse_adj_lists[i].begin(), 
-        // reverse_adj_lists[i].end(), &reverse_edges[begin]);
-    std::memcpy(&reverse_edges[begin], &reverse_adj_lists[i][0], reverse_adj_lists[i].size());
-  }
-  for (auto adjlist : reverse_adj_lists) adjlist.clear();
-  reverse_adj_lists.clear();
-}
+// void Graph::build_reverse_graph() {
+//   std::vector<VertexList> reverse_adj_lists(n_vertices);
+//   for (vidType v = 0; v < n_vertices; v++) {
+//     for (auto u : N(v)) {
+//       reverse_adj_lists[u].push_back(v);
+//     }
+//   }
+//   reverse_vertices = custom_alloc_global<eidType>(n_vertices+1);
+//   reverse_vertices[0] = 0;
+//   for (vidType i = 1; i < n_vertices+1; i++) {
+//     auto degree = reverse_adj_lists[i-1].size();
+//     reverse_vertices[i] = reverse_vertices[i-1] + degree;
+//   }
+//   reverse_edges = custom_alloc_global<vidType>(n_edges);
+//   //#pragma omp parallel for
+//   for (vidType i = 0; i < n_vertices; i++) {
+//     auto begin = reverse_vertices[i];
+//     std::copy(reverse_adj_lists[i].begin(), 
+//         reverse_adj_lists[i].end(), &reverse_edges[begin]);
+//     // std::memcpy(&reverse_edges[begin], &reverse_adj_lists[i][0], reverse_adj_lists[i].size());
+//   }
+//   for (auto adjlist : reverse_adj_lists) adjlist.clear();
+//   reverse_adj_lists.clear();
+// }
 
 VertexSet Graph::N(vidType vid) const {
   assert(vid >= 0);

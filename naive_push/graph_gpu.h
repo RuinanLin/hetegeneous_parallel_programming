@@ -4,10 +4,12 @@
 #include "cutil_subset.h"
 #include "nvshmem.h"
 #include "nvshmemx.h"
+#include "metis.h"
 
 class GraphGPU {
 protected:
   vidType num_vertices;             // number of vertices
+  vidType n_real_vertices;          // when considering metis partition, how many real vertices are partitioned into this
   eidType num_edges;                // number of edges
   int device_id, n_gpu;             // no. of GPUs
   eidType *d_rowptr;                // row pointers of CSR format
@@ -18,7 +20,10 @@ protected:
   vidType *d_vlabels_frequency;     // vertex label frequency
   int num_vertex_classes;           // number of unique vertex labels
   int num_edge_classes;             // number of unique edge labels
+  vidType md;                       // max degree across all the subgraphs
   vidType *d_message_buffer;        // message buffer for inter-gpu communication
+  idx_t *d_part;                    // metis' partition result, each vertex belong to which subgraph
+  vidType *d_vertex_list;           // the subgraph contains which vertices
 public:
   GraphGPU() : device_id(0), n_gpu(1) {}
   GraphGPU(Graph &g) : device_id(0), n_gpu(1) { init(g); }
@@ -49,6 +54,13 @@ public:
   inline __device__ __host__ elabel_t* getElabelPtr() { return d_elabels; }
   inline __device__ __host__ vlabel_t* get_vlabel_ptr() { return d_vlabels; }
   inline __device__ __host__ elabel_t* get_elabel_ptr() { return d_elabels; }
+  inline __device__ __host__ vidType get_vertex_in_vertex_list(vidType u_local_id) { return d_vertex_list[u_local_id]; }
+  inline __device__ __host__ int get_vertex_partition_number(vidType v) { return (int)d_part[v]; }
+  inline __device__ __host__ vidType get_n_real_vertices() { return n_real_vertices; }
+  inline __device__ __host__ void set_max_degree(vidType max_degree) { md = max_degree; }
+  inline __device__ __host__ vidType get_max_degree() { return md; }
+  inline __device__ __host__ vidType *get_message_address(int offset) { return d_message_buffer + offset; }
+  inline __device__ __host__ int get_n_gpu() { return n_gpu; }
  
   inline __device__ __host__ bool is_freq_vertex(vidType v, int threshold) {
     auto label = int(d_vlabels[v]);
@@ -326,30 +338,39 @@ public:
   }
 
   // allocate memory using nvshmem
-  void init_nvshmem(Graph &hg, int id, size_t message_buffer_size, cudaStream_t stream) {
-    std::cout << "Allocating memory for subgraph " << id << "\n";
+  void init_nvshmem(PartitionedGraph pg, int mype, size_t message_buffer_size) {
+    std::cout << "Allocating memory for subgraph " << mype << "\n";
+
+    // get the subgraph
+    auto &subg = *pg.get_subgraph(mype);
+
+    // initialize some important variables
+    num_vertices = subg.V();
+    n_real_vertices = subg.get_n_real_vertices();
+    num_edges = subg.E();
+    device_id = mype;
+    n_gpu = nvshmem_n_pes();
   
     // allocate rowptr
-    vidType nv = hg.V();
-    std::cout << "nv for subgraph " << id << ": " << nv << "\n";
-    CUDA_SAFE_CALL(cudaMalloc((void **)&d_rowptr, (nv+1) * sizeof(eidType)));
-    std::cout << "Allocated rowptr pointer " << d_rowptr << " for subgraph " << id << "\n";
-    // copy to device rowptr
-    CUDA_SAFE_CALL(cudaMemcpyAsync(d_rowptr, hg.out_rowptr(), (nv+1) * sizeof(eidType), cudaMemcpyHostToDevice, stream));
-    std::cout << "Copying rowptr for subgraph " << id << "\n";
+    CUDA_SAFE_CALL(cudaMalloc((void **)&d_rowptr, (num_vertices+1) * sizeof(eidType)));
+    CUDA_SAFE_CALL(cudaMemcpy(d_rowptr, subg.out_rowptr(), (num_vertices+1) * sizeof(eidType), cudaMemcpyHostToDevice));
 
     // allocate colidx
-    eidType ne = hg.E();
-    std::cout << "ne for subgraph " << id << ": " << ne << "\n";
-    CUDA_SAFE_CALL(cudaMalloc((void **)&d_colidx, ne * sizeof(vidType)));
-    std::cout << "Allocated colidx pointer " << d_colidx << " for subgraph " << id << "\n";
-    // copy to device colidx
-    CUDA_SAFE_CALL(cudaMemcpyAsync(d_colidx, hg.out_colidx(), ne * sizeof(vidType), cudaMemcpyHostToDevice, stream));
-    std::cout << "Copying colidx for subgraph " << id << "\n";
+    eidType subg_ne = subg.E();
+    CUDA_SAFE_CALL(cudaMalloc((void **)&d_colidx, subg_ne * sizeof(vidType)));
+    CUDA_SAFE_CALL(cudaMemcpy(d_colidx, subg.out_colidx(), subg_ne * sizeof(vidType), cudaMemcpyHostToDevice));
+
+    // allocate vertex_list
+    vidType subg_nv = subg.get_n_real_vertices();
+    CUDA_SAFE_CALL(cudaMalloc((void **)&d_vertex_list, subg_nv * sizeof(vidType)));
+    CUDA_SAFE_CALL(cudaMemcpy(d_vertex_list, pg.get_vertex_list(mype), subg_nv * sizeof(vidType), cudaMemcpyHostToDevice));
 
     // allocate message buffer
     d_message_buffer = (vidType *)nvshmem_malloc(message_buffer_size);
-    std::cout << "Allocated message buffer for subgraph " << id << "\n";
+
+    // allocate part
+    CUDA_SAFE_CALL(cudaMalloc((void **)&d_part, num_vertices * sizeof(idx_t)));
+    CUDA_SAFE_CALL(cudaMemcpy(d_part, pg.get_metis_part(), num_vertices * sizeof(idx_t), cudaMemcpyHostToDevice));
   }
 };
 

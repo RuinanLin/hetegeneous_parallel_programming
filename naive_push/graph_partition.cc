@@ -439,9 +439,8 @@ void PartitionedGraph::metis_partition() {
   idx_t nparts = num_subgraphs;
   idx_t *xadj = new idx_t[nv+1];
   idx_t *adjncy = new idx_t[ne];
-  idx_t *part = new idx_t[nv];
+  part = new idx_t[nv];
   idx_t objval;
-
   std::memcpy(xadj, g->out_rowptr(), (nv+1) * sizeof(idx_t));
   vidType *edges = g->out_colidx();
   #pragma omp parallel for
@@ -459,19 +458,39 @@ void PartitionedGraph::metis_partition() {
     num_edges_each_partition[part[v]] += g->get_degree(v);
   }
 
-  vertex_local_indices.resize(nv);
   #pragma omp parallel for
   for (int sg_id = 0; sg_id < num_subgraphs; sg_id++) {
     subgraphs[sg_id] = new Graph(); // points to the subgraph
-    subgraphs[sg_id]->allocateFrom(verts_of_clusters[sg_id].size(), num_edges_each_partition[sg_id]);
+    subgraphs[sg_id]->set_n_real_vertices(verts_of_clusters[sg_id].size());
+    subgraphs[sg_id]->allocateFrom(nv, num_edges_each_partition[sg_id]);
     eidType *sub_vertices = subgraphs[sg_id]->out_rowptr();
     vidType *sub_edges = subgraphs[sg_id]->out_colidx();
+    
+    // create the subgraph's rowptr
+    eidType current_edge_list_ptr = 0;
+    eidType next_u_start = 0;
     for (size_t i = 0; i < verts_of_clusters[sg_id].size(); i++) {
       vidType v = verts_of_clusters[sg_id][i];
-      vertex_local_indices[v] = i;
-      sub_vertices[i+1] = sub_vertices[i] + g->get_degree(v);
-      std::memcpy(&sub_edges[sub_vertices[i]], g->adj_ptr(v), g->get_degree(v));
+      for (vidType u = next_u_start; u <= v; u++) {
+        sub_vertices[u] = current_edge_list_ptr;
+      }
+      current_edge_list_ptr += g->get_degree(v);
+      next_u_start = v + 1;
     }
+    for (vidType u = next_u_start; u <= nv; u++) {
+      sub_vertices[u] = current_edge_list_ptr;
+    }
+
+    // create the subgraph's colidx
+    for (size_t i = 0; i < verts_of_clusters[sg_id].size(); i++) {
+      vidType v = verts_of_clusters[sg_id][i];
+      // std::memcpy(&sub_edges[sub_vertices[v]], g->adj_ptr(v), g->get_degree(v));
+      for (vidType n = 0; n < g->get_degree(v); n++) {
+        sub_edges[sub_vertices[v]+n] = g->N(v, n);
+        assert(g->N(v, n) >= 0);
+      }
+    }
+
     subgraphs[sg_id]->print_meta_data();
   }
 }
