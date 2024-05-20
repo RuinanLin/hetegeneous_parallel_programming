@@ -9,10 +9,22 @@ __global__ void ring_bcast(int *data, size_t nelem, int root, uint64_t *psync) {
     int npes = nvshmem_n_pes();
     int peer = (mype + 1) % npes;
 
+    int add_result = 0;
+    for (int i = 0; i < nelem; i++) {
+        add_result += data[i];
+    }
+    printf("%d before : %d\n", mype, add_result);
+
     if (mype == root)
         *psync = 1;
 
     nvshmem_signal_wait_until(psync, NVSHMEM_CMP_NE, 0);
+
+    add_result = 0;
+    for (int i = 0; i < nelem; i++) {
+        add_result += data[i];
+    }
+    printf("%d after : %d\n", mype, add_result);
 
     if (mype == npes-1) return;
 

@@ -3,6 +3,8 @@
 #include "utils.h"
 #include "metis.h"
 
+#define RECORD_PUSH_STANDARD_ANSWER
+
 void PartitionedGraph::print_subgraphs() {
   for (int i = 0; i < num_subgraphs; ++i) {
     std::cout << "Printing subgraph[" << i << "]\n";
@@ -531,24 +533,116 @@ void PartitionedGraph::metis_write_into_file() {
     assert(p_vertices);
     p_vertices.write((char *)subg.out_rowptr(), (subg.V()+1)*sizeof(eidType));
     p_vertices.close();
+    // vertices in txt
+    ofstream p_vertices_txt(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".vertex.txt");
+    assert(p_vertices_txt);
+    for (int i = 0; i < subg.V()+1; i++) {
+      p_vertices_txt << i << ": " << (subg.out_rowptr())[i] << "\n";
+    }
+    p_vertices_txt.close();
 
     // edges
     ofstream p_edges(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".edge.bin", ios::out | ios::binary);
     assert(p_edges);
     p_edges.write((char *)subg.out_colidx(), subg.E()*sizeof(vidType));
     p_edges.close();
+    // edges in txt
+    ofstream p_edges_txt(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".edge.txt");
+    assert(p_edges_txt);
+    for (int i = 0; i < subg.E(); i++) {
+      p_edges_txt << i << ": " << (subg.out_colidx())[i] << "\n";
+    }
+    p_edges_txt.close();
 
     // vertex_list
     ofstream p_vertex_list(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".vertex_list.bin", ios::out | ios::binary);
     assert(p_vertex_list);
     p_vertex_list.write((char *)get_vertex_list(sg_id), subg.get_n_real_vertices()*sizeof(vidType));
     p_vertex_list.close();
+    // vertex_list in txt
+    ofstream p_vertex_list_txt(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".vertex_list.txt");
+    assert(p_vertex_list_txt);
+    for (int i = 0; i < subg.get_n_real_vertices(); i++) {
+      p_vertex_list_txt << i << ": " << (get_vertex_list(sg_id))[i] << "\n";
+    }
+    p_vertex_list_txt.close();
 
     // part
     ofstream p_part(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".part.bin", ios::out | ios::binary);
     assert(p_part);
     p_part.write((char *)get_metis_part(), g->V()*sizeof(idx_t));
     p_part.close();
+    // part in txt
+    ofstream p_part_txt(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".part.txt");
+    assert(p_part_txt);
+    for (int i = 0; i < g->V(); i++) {
+      p_part_txt << i << ": " << (get_metis_part())[i] << "\n";
+    }
+    p_part_txt.close();
+
+    // csr format
+    ofstream p_csr_txt(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".csr.txt");
+    assert(p_csr_txt);
+    for (vidType u_local_id = 0; u_local_id < subg.get_n_real_vertices(); u_local_id++) {
+      vidType u = (get_vertex_list(sg_id))[u_local_id];
+      p_csr_txt << u << ": ";
+      for (eidType v_id_in_u_list = (subg.out_rowptr())[u]; v_id_in_u_list < (subg.out_rowptr())[u+1]; v_id_in_u_list++) {
+        p_csr_txt << (subg.out_colidx())[v_id_in_u_list] << " ";
+      }
+      p_csr_txt << "\n";
+    }
+    p_csr_txt.close();
+
+    // push standard answer
+#ifdef RECORD_PUSH_STANDARD_ANSWER
+    ofstream p_push_to_0_standard_answer(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".push_to_0_standard_answer.txt");
+    ofstream p_push_to_1_standard_answer(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".push_to_1_standard_answer.txt");
+    ofstream p_push_to_2_standard_answer(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".push_to_2_standard_answer.txt");
+    ofstream p_push_to_3_standard_answer(partitioned_file_path+"metis/pgraph"+std::to_string(sg_id)+".push_to_3_standard_answer.txt");
+
+    assert(p_push_to_0_standard_answer);
+    assert(p_push_to_1_standard_answer);
+    assert(p_push_to_2_standard_answer);
+    assert(p_push_to_3_standard_answer);
+
+    for (vidType u_local_id = 0; u_local_id < subg.get_n_real_vertices(); u_local_id++) {
+      vidType u = (get_vertex_list(sg_id))[u_local_id];
+      p_push_to_0_standard_answer << u << ": ";
+      p_push_to_1_standard_answer << u << ": ";
+      p_push_to_2_standard_answer << u << ": ";
+      p_push_to_3_standard_answer << u << ": ";
+
+      for (eidType v_id_in_u_list = (subg.out_rowptr())[u]; v_id_in_u_list < (subg.out_rowptr())[u+1]; v_id_in_u_list++) {
+        vidType v = (subg.out_colidx())[v_id_in_u_list];
+        if (g->get_degree(u) < g->get_degree(v)) {
+          switch (part[v]) {
+            case 0:
+              p_push_to_0_standard_answer << v << " ";
+              break;
+            case 1:
+              p_push_to_1_standard_answer << v << " ";
+              break;
+            case 2:
+              p_push_to_2_standard_answer << v << " ";
+              break;
+            case 3:
+              p_push_to_3_standard_answer << v << " ";
+              break;
+          }
+        }
+      }
+
+      p_push_to_0_standard_answer << "\n";
+      p_push_to_1_standard_answer << "\n";
+      p_push_to_2_standard_answer << "\n";
+      p_push_to_3_standard_answer << "\n";
+    }
+
+    p_push_to_0_standard_answer.close();
+    p_push_to_1_standard_answer.close();
+    p_push_to_2_standard_answer.close();
+    p_push_to_3_standard_answer.close();
+#endif
   }
 }
 
