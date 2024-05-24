@@ -11,7 +11,7 @@
 
 typedef int32_t vidType;
 
-__device__ void worker_launch(int *valid_for_sender, int *num_working_workers, int *msg_len, vidType *msg_buffer) {
+__device__ void worker_launch(int *valid_for_sender, int *num_working_workers, int *msg_len, vidType *msg_buffer, vidType *sum_test) {
     // about the threads and blocks
     int thread_lane = threadIdx.x & (WARP_SIZE-1);
     int warp_lane = threadIdx.x / WARP_SIZE;            // warp index within the CTA
@@ -27,6 +27,7 @@ __device__ void worker_launch(int *valid_for_sender, int *num_working_workers, i
         if (thread_lane == 0) {
             for (int i = 0; i < degree; i++) {
                 msg_buffer[i] = degree - i;
+                atomicAdd(sum_test, degree - i);
             }
             *msg_len = degree;
             __threadfence_block();
@@ -45,7 +46,7 @@ __device__ void worker_launch(int *valid_for_sender, int *num_working_workers, i
     }
 }
 
-__device__ void sender_launch(int *valid_for_sender, int *num_working_workers, int *msg_len, vidType *msg_buffer) {
+__device__ void sender_launch(int *valid_for_sender, int *num_working_workers, int *msg_len, vidType *msg_buffer, vidType *sum_test) {
     int thread_lane = threadIdx.x & (WARP_SIZE-1);
     
     while (1) {
@@ -62,6 +63,9 @@ __device__ void sender_launch(int *valid_for_sender, int *num_working_workers, i
                 for (int i = 0; i < degree; i++) {
                     if (msg_buffer[worker_id * SLOT_SIZE + i] != degree - i && thread_lane == 5) {
                         printf("msg_buffer[%d][%d] = %d, should be %d.\n", worker_id, i, (int)msg_buffer[i], degree - i);
+                    }
+                    if (thread_lane == 0) {
+                        atomicSub(sum_test, degree - i);
                     }
                     __syncwarp();
                 }
@@ -83,6 +87,9 @@ __device__ void sender_launch(int *valid_for_sender, int *num_working_workers, i
     }
 
     if (thread_lane == 0) {
+        __threadfence_block();
+        printf("sum_test = %d\n", (int)*sum_test);
+
         printf("warp 7 exits.\n");
     }
 }
@@ -96,11 +103,13 @@ __global__ void test_shared_memory_buffer(int slot_size) {
     __shared__ int num_working_workers;
     __shared__ int msg_len[NUM_WARPS_IN_A_BLOCK - 1];
     __shared__ vidType msg_buffer[NUM_WARPS_IN_A_BLOCK * SLOT_SIZE];
+    __shared__ vidType sum_test;
 
     __syncthreads();
 
     if (warp_lane == 0 && thread_lane == 0) {
         num_working_workers = NUM_WARPS_IN_A_BLOCK - 1;
+        sum_test = 0;
     }
 
     if (warp_lane < NUM_WARPS_IN_A_BLOCK - 1 && thread_lane == 0) {
@@ -111,9 +120,9 @@ __global__ void test_shared_memory_buffer(int slot_size) {
     __syncthreads();
 
     if (warp_lane < NUM_WARPS_IN_A_BLOCK - 1) {
-        worker_launch(valid_for_sender + warp_lane, &num_working_workers, msg_len + warp_lane, msg_buffer + warp_lane * SLOT_SIZE);
+        worker_launch(valid_for_sender + warp_lane, &num_working_workers, msg_len + warp_lane, msg_buffer + warp_lane * SLOT_SIZE, &sum_test);
     } else {
-        sender_launch(valid_for_sender, &num_working_workers, msg_len, msg_buffer);
+        sender_launch(valid_for_sender, &num_working_workers, msg_len, msg_buffer, &sum_test);
     }
 }
 
