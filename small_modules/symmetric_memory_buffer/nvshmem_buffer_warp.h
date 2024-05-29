@@ -42,9 +42,6 @@ private:
     int *msg_len;                   // [ ndevices-1 ]
     vidType *content;               // [ ndevices-1, slot_size ]
 
-    // debug
-    int *counter;
-
 public:
     NVSHMEMBufferWarp(int mype, int num_devices, int slot_sz, int num_producers) : my_id(mype), ndevices(num_devices), slot_size(slot_sz) {
         valid = (int *)nvshmem_malloc((ndevices-1) * sizeof(int));
@@ -54,7 +51,6 @@ public:
         msg_type = (int *)nvshmem_malloc(sizeof(int));
         msg_len = (int *)nvshmem_malloc((ndevices-1) * sizeof(int));
         content = (vidType *)nvshmem_malloc((ndevices-1) * slot_size * sizeof(vidType));
-        CUDA_SAFE_CALL(cudaMalloc((void **)&counter, sizeof(int)));
 
         int *valid_h = (int *)malloc((ndevices-1) * sizeof(int));
         for (int i = 0; i < ndevices-1; i++) {
@@ -72,9 +68,6 @@ public:
         CUDA_SAFE_CALL(cudaMemcpy(ready, ready_h, (ndevices-1) * sizeof(uint64_t), cudaMemcpyHostToDevice));
 
         CUDA_SAFE_CALL(cudaMemcpy(num_working_producers, &num_producers, sizeof(int), cudaMemcpyHostToDevice));
-
-        int counter_h = 0;
-        CUDA_SAFE_CALL(cudaMemcpy(counter, &counter_h, sizeof(int), cudaMemcpyHostToDevice));
     }
 
     inline __device__ int get_my_id() { return my_id; }

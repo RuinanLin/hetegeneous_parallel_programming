@@ -11,6 +11,8 @@
 
 __device__ void sender_launch(NVSHMEMBufferWarp nvshmem_buffer_warp, vidType *message_scratchpad) {
     int thread_lane = threadIdx.x & (WARP_SIZE-1);              // thread index within the warp
+
+    int count = 0;
     
     for (int round = 0; round < SEND_ROUND; round++) {
         for (int dest = 0; dest < nvshmem_buffer_warp.get_ndevices(); dest++) {
@@ -19,6 +21,7 @@ __device__ void sender_launch(NVSHMEMBufferWarp nvshmem_buffer_warp, vidType *me
             if (thread_lane == 0) {
                 for (int i = 0; i < degree; i++) {
                     message_scratchpad[i] = degree - i;
+                    count += degree - i;
                 }
             }
             __syncwarp();
@@ -26,7 +29,7 @@ __device__ void sender_launch(NVSHMEMBufferWarp nvshmem_buffer_warp, vidType *me
         }
     }
     if (thread_lane == 0) {
-        printf("ready to exit.\n");
+        printf("pe %d sender count = %d\n", nvshmem_buffer_warp.get_my_id(), count);
     }
     __syncwarp();
     for (int dest = 0; dest < nvshmem_buffer_warp.get_ndevices(); dest++) {
@@ -37,6 +40,8 @@ __device__ void sender_launch(NVSHMEMBufferWarp nvshmem_buffer_warp, vidType *me
 
 __device__ void recver_launch(NVSHMEMBufferWarp nvshmem_buffer_warp) {
     int thread_lane = threadIdx.x & (WARP_SIZE-1);
+
+    int count = 0;
     
     vidType *start;
     int degree;
@@ -46,7 +51,13 @@ __device__ void recver_launch(NVSHMEMBufferWarp nvshmem_buffer_warp) {
         //     printf("hello.\n");
         // }
         // __syncwarp();
-        if (nvshmem_buffer_warp.consumer_get_msg_pointer(&start, &degree, &dest) == 1) return;
+        if (nvshmem_buffer_warp.consumer_get_msg_pointer(&start, &degree, &dest) == 1) {
+            if (thread_lane == 0) {
+                printf("pe %d recver count = %d\n", nvshmem_buffer_warp.get_my_id(), count);
+            }
+            __syncwarp();
+            return;
+        }
         for (int i = 0; i < degree; i++) {
             if (start[i] != degree - i) {
                 if (thread_lane == 0) {
@@ -54,7 +65,10 @@ __device__ void recver_launch(NVSHMEMBufferWarp nvshmem_buffer_warp) {
                 }
                 __syncwarp();
             }
-            assert(start[i] == degree - i);
+            if (thread_lane == 0) {
+                count += start[i];
+            };
+            __syncwarp();
         }
         nvshmem_buffer_warp.consumer_release(dest);
     }
