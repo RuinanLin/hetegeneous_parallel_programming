@@ -48,7 +48,7 @@ public:
         valid_signal_count = (uint64_t *)nvshmem_malloc(sizeof(uint64_t));
         ready = (uint64_t *)nvshmem_malloc((ndevices-1) * sizeof(uint64_t));
         CUDA_SAFE_CALL(cudaMalloc((void **)&num_working_producers, sizeof(int)));
-        msg_type = (int *)nvshmem_malloc(sizeof(int));
+        msg_type = (int *)nvshmem_malloc((ndevices-1) * sizeof(int));
         msg_len = (int *)nvshmem_malloc((ndevices-1) * sizeof(int));
         content = (vidType *)nvshmem_malloc((ndevices-1) * slot_size * sizeof(vidType));
 
