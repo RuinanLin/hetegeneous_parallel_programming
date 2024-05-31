@@ -1,0 +1,2 @@
+nvcc -o test_multi_destination_shared_memory_buffer test_multi_destination_shared_memory_buffer.cu
+srun --account=bcsh-delta-gpu --partition=gpuA100x4-interactive -G 1 -n 1 ./test_multi_destination_shared_memory_buffer
